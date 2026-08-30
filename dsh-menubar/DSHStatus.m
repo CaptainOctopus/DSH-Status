@@ -136,6 +136,7 @@ static NSString *modelMemLabel(NSString *mid, NSDictionary<NSString *, NSString 
 
 // MARK: - 控制动作（复用 dsh-manager.sh）
 
+// 异步执行 dsh-manager.sh；完成时若失败则弹窗提示，并把输出写入日志。
 static void runManager(NSArray<NSString *> *args) {
     NSTask *task = [[NSTask alloc] init];
     task.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
@@ -154,9 +155,38 @@ static void runManager(NSArray<NSString *> *args) {
     task.environment = env;
     DSHLog(@"runManager %@", [full componentsJoinedByString:@" "]);
 
+    NSPipe *pipe = [NSPipe pipe];
+    task.standardOutput = pipe;
+    task.standardError = pipe;
+
+    task.terminationHandler = ^(NSTask *t) {
+        NSData *data = [[t.standardOutput fileHandleForReading] readDataToEndOfFile];
+        NSString *txt = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+        if (txt.length) {
+            DSHLog(@"runManager output (%d):\n%@", (int)t.terminationStatus, txt);
+        }
+        if (t.terminationStatus != 0) {
+            dispatch_async(dispatch_get_main_queue(), ^{
+                NSAlert *alert = [[NSAlert alloc] init];
+                alert.messageText = @"操作失败";
+                alert.informativeText = [NSString stringWithFormat:@"命令: %@\n退出码: %d\n\n%@",
+                                         [full componentsJoinedByString:@" "],
+                                         (int)t.terminationStatus,
+                                         txt.length ? txt : @"(无输出)"];
+                [alert runModal];
+            });
+        }
+    };
+
     NSError *err = nil;
     [task launchAndReturnError:&err];
-    if (err) NSLog(@"[DSHStatus] 执行失败: %@", err);
+    if (err) {
+        DSHLog(@"runManager launch error: %@", err);
+        NSAlert *alert = [[NSAlert alloc] init];
+        alert.messageText = @"无法启动管理脚本";
+        alert.informativeText = [NSString stringWithFormat:@"%@", err];
+        [alert runModal];
+    }
 }
 
 static NSString *gb(uint64_t bytes) {

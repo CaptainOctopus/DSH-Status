@@ -30,7 +30,19 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 WORKSPACE="${WORKSPACE:-$SCRIPT_DIR}"
 OMLX_BIN="${OMLX_BIN:-$HOME/.workbuddy/binaries/python/envs/omlx/bin/omlx}"
-OMLX_MODELS_DIR="${OMLX_MODELS_DIR:-$WORKSPACE/mlx-agent-lab/models}"
+# 模型目录允许多个候选：打包后的 app 默认不带模型，优先使用用户实际放置模型的目录。
+# oMLX 模型目录：目录存在且里面至少有一个权重文件才算有效。
+OMLX_MODELS_DIR="${OMLX_MODELS_DIR:-$(
+  found=""
+  for d in "$WORKSPACE/mlx-agent-lab/models" \
+           "$HOME/WorkBuddy/2026-08-28-23-12-48/mlx-agent-lab/models" \
+           "$HOME/.dsh/models/omlx"; do
+    if [ -d "$d" ] && find "$d" -maxdepth 2 \( -name '*.safetensors' -o -name '*.npz' -o -name '*.bin' \) | head -1 | grep -q .; then
+      found="$d"; break
+    fi
+  done
+  echo "${found:-${WORKSPACE}/mlx-agent-lab/models}"
+)}"
 OMLX_CACHE="${OMLX_CACHE:-$HOME/.omlx/paged_cache}"
 
 DSH_BIN="$HOME/.dsh/profiles/node_modules/@deepseek-ai/dsh/lib/bin.js"
@@ -42,7 +54,18 @@ DSH_WEB_PORT=3080        # DSH Web 默认端口；用户 `dsh web` 即起在此�
 DSH_WEB_PATS=("dsh web" "bin.js --profile $DSH_PROFILE")
 
 LLAMA_BIN="/opt/homebrew/bin/llama-server"
-GGUF_DIR="$WORKSPACE/llamacpp-models"
+# llama.cpp GGUF 目录：目录存在且里面至少有一个 .gguf 文件才算有效。
+GGUF_DIR="${GGUF_DIR:-$(
+  found=""
+  for d in "$WORKSPACE/llamacpp-models" \
+           "$HOME/WorkBuddy/2026-08-28-23-12-48/llamacpp-models" \
+           "$HOME/.dsh/models/gguf"; do
+    if [ -d "$d" ] && find "$d" -maxdepth 1 -name '*.gguf' | head -1 | grep -q .; then
+      found="$d"; break
+    fi
+  done
+  echo "${found:-${WORKSPACE}/llamacpp-models}"
+)}"
 DEFAULT_LLAMA="qwen3-8b-ablit"   # start 时自动拉起的 GGUF 模型
 
 PAGE_SIZE=16384
@@ -84,10 +107,24 @@ is_registered() {
 
 # 返回模型主进程 PID，找不到则空
 model_pid() {
-  local name="$1" port
+  local name="$1" port pid
   case "$(mt_type "$name")" in
-    omlx)     pgrep -f "omlx-server" 2>/dev/null | head -1 ;;
-    llamacpp) port=$(mt_port "$name"); pgrep -f "llama-server.*--port $port" 2>/dev/null | head -1 ;;
+    omlx)
+      pid=$(pgrep -f "omlx-server" 2>/dev/null | head -1)
+      [ -n "$pid" ] && { echo "$pid"; return; }
+      pid=$(pgrep -f "omlx serve" 2>/dev/null | head -1)
+      [ -n "$pid" ] && { echo "$pid"; return; }
+      # 兜底：按端口 8000 反查 PID（某些环境下 pgrep -f 读不到完整命令行）
+      pid=$(lsof -iTCP:8000 -sTCP:LISTEN -n -P 2>/dev/null | awk 'NR==2{print $2}')
+      [ -n "$pid" ] && { echo "$pid"; return; }
+      ;;
+    llamacpp)
+      port=$(mt_port "$name")
+      pid=$(pgrep -f "llama-server.*--port $port" 2>/dev/null | head -1)
+      [ -n "$pid" ] && { echo "$pid"; return; }
+      pid=$(lsof -iTCP:"$port" -sTCP:LISTEN -n -P 2>/dev/null | awk 'NR==2{print $2}')
+      [ -n "$pid" ] && { echo "$pid"; return; }
+      ;;
   esac
 }
 
@@ -135,8 +172,17 @@ hr_bytes() {
 # ----------------------------- 启停动作 --------------------------------------
 start_omlx() {
   if [ "$(model_state omlx)" = "running" ]; then echo "  oMLX 已在运行 (:8000)"; return 0; fi
+  if [ ! -d "$OMLX_MODELS_DIR" ]; then
+    echo "  ✗ 找不到 oMLX 模型目录: $OMLX_MODELS_DIR"
+    echo "     请把模型放到以下任一路径，或设置 OMLX_MODELS_DIR 环境变量:"
+    echo "       ${WORKSPACE}/mlx-agent-lab/models"
+    echo "       $HOME/WorkBuddy/2026-08-28-23-12-48/mlx-agent-lab/models"
+    echo "       $HOME/.dsh/models/omlx"
+    return 1
+  fi
   mkdir -p "$OMLX_CACHE"
   echo "  启动 oMLX (:8000) ..."
+  echo "    模型目录: $OMLX_MODELS_DIR"
   nohup "$OMLX_BIN" serve \
     --model-dir "$OMLX_MODELS_DIR" \
     --port 8000 \
@@ -152,7 +198,20 @@ start_llamacpp() {
   local name="$1" port gguf log
   port=$(mt_port "$name"); gguf=$(mt_gguf "$name"); log="/tmp/llamacpp_${name}.log"
   if [ "$(model_state "$name")" = "running" ]; then echo "  $name 已在运行 (:${port})"; return 0; fi
-  if [ ! -f "$GGUF_DIR/$gguf" ]; then echo "  ⚠ 找不到 GGUF: $GGUF_DIR/$gguf"; return 1; fi
+  if [ ! -d "$GGUF_DIR" ]; then
+    echo "  ✗ 找不到 GGUF 目录: $GGUF_DIR"
+    echo "     请把 GGUF 放到以下任一路径，或设置 GGUF_DIR 环境变量:"
+    echo "       ${WORKSPACE}/llamacpp-models"
+    echo "       $HOME/WorkBuddy/2026-08-28-23-12-48/llamacpp-models"
+    echo "       $HOME/.dsh/models/gguf"
+    return 1
+  fi
+  if [ ! -f "$GGUF_DIR/$gguf" ]; then
+    echo "  ✗ 找不到模型文件: $GGUF_DIR/$gguf"
+    echo "     该目录现有文件:"
+    ls -1 "$GGUF_DIR" 2>/dev/null | sed 's/^/       - /'
+    return 1
+  fi
   echo "  启动 $name (llama.cpp :${port}) ..."
   nohup env no_proxy='*' http_proxy='' https_proxy='' "$LLAMA_BIN" \
     --model "$GGUF_DIR/$gguf" \
@@ -165,26 +224,41 @@ stop_model() {
   local name="$1"
   case "$(mt_type "$name")" in
     omlx)
-      # oMLX 一旦真正运行，进程名会改写为 Rust 二进制 'omlx-server'，
-      # 启动命令 'omlx serve' 反而匹配不到，必须用 'omlx-server' 模式。
-      if pgrep -f "omlx-server" >/dev/null 2>&1 || pgrep -f "start_omlx.sh" >/dev/null 2>&1; then
+      # oMLX 进程名随版本/启动方式可能为 'omlx-server'、'omlx serve' 或 python wrapper。
+      # 这里用多重模式 + 端口反查 PID 兜底，确保能停干净。
+      local any=0
+      pgrep -f "omlx-server" >/dev/null 2>&1 && any=1
+      pgrep -f "omlx serve"  >/dev/null 2>&1 && any=1
+      pgrep -f "$OMLX_BIN"   >/dev/null 2>&1 && any=1
+      lsof -iTCP:8000 -sTCP:LISTEN >/dev/null 2>&1 && any=1
+      if [ "$any" -eq 1 ]; then
         echo "  停用 $name ..."
         pkill -f "omlx-server" 2>/dev/null
-        pkill -f "start_omlx.sh" 2>/dev/null
+        pkill -f "omlx serve"  2>/dev/null
+        pkill -f "$OMLX_BIN"   2>/dev/null
         sleep 1
         pgrep -f "omlx-server" >/dev/null 2>&1 && pkill -9 -f "omlx-server" 2>/dev/null
-        pgrep -f "start_omlx.sh" >/dev/null 2>&1 && pkill -9 -f "start_omlx.sh" 2>/dev/null
+        pgrep -f "omlx serve"  >/dev/null 2>&1 && pkill -9 -f "omlx serve"  2>/dev/null
+        pgrep -f "$OMLX_BIN"   >/dev/null 2>&1 && pkill -9 -f "$OMLX_BIN"   2>/dev/null
+        # 最后兜底：用 model_pid 端口反查再杀一次
+        local pid; pid=$(model_pid omlx)
+        [ -n "$pid" ] && { kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; }
       else
         echo "  $name 本就未运行"
       fi
       ;;
     llamacpp)
-      local pat="llama-server.*--port $(mt_port "$name")"
-      if pgrep -f "$pat" >/dev/null 2>&1; then
+      local port pat
+      port=$(mt_port "$name")
+      pat="llama-server.*--port $port"
+      if pgrep -f "$pat" >/dev/null 2>&1 || lsof -iTCP:"$port" -sTCP:LISTEN >/dev/null 2>&1; then
         echo "  停用 $name ..."
         pkill -f "$pat" 2>/dev/null
         sleep 1
         pgrep -f "$pat" >/dev/null 2>&1 && pkill -9 -f "$pat" 2>/dev/null
+        # 兜底：端口反查 PID
+        local pid; pid=$(model_pid "$name")
+        [ -n "$pid" ] && { kill "$pid" 2>/dev/null; sleep 1; kill -9 "$pid" 2>/dev/null; }
       else
         echo "  $name 本就未运行"
       fi
@@ -358,13 +432,17 @@ cmd_stop() {
 }
 
 cmd_load() {
-  local name="${1:-}"
+  local name="${1:-}" rc=0
   is_registered "$name" || { echo "✗ 未知模型: $name（用 'models' 查看）"; exit 1; }
   echo "==> 加载 $name"
   case "$(mt_type "$name")" in
-    omlx)     start_omlx ;;
-    llamacpp) start_llamacpp "$name" ;;
+    omlx)     start_omlx || rc=1 ;;
+    llamacpp) start_llamacpp "$name" || rc=1 ;;
   esac
+  if [ "$rc" -ne 0 ]; then
+    echo "==> 加载 $name 失败"
+    return 1
+  fi
   wait_running "$name"
   echo "==> 当前状态:"; print_status
 }
