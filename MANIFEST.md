@@ -68,7 +68,7 @@ DSH Status 是一套**纯本地、只监听 127.0.0.1 的个人小工具**，由
 ### 一键配置到其他应用
 
 - **DeepSeekHarness（DSH Web）**：点击「→Harness」按钮 / 菜单「⚙ 配置到 DeepSeekHarness」即可直接改写 `~/.dsh/settings.yaml` 的 `agent-default-model`（保留注释）。
-- **WorkBuddy**：点击「📋WB」按钮 / 菜单「📋 复制 WorkBuddy 配置」即可生成并复制「添加模型」对话框所需字段，粘贴到 WorkBuddy 设置 → 模型 → 添加模型 → 自定义 后保存即可。
+- **WorkBuddy**：点击「📋WB」按钮 / 菜单「📋 配置到 WorkBuddy」，即直接把该模型 upsert 进 `~/.workbuddy/models.json`（vendor=Custom 分组，重启 WorkBuddy 后下拉即出现），无需手动粘贴。
 
 ---
 

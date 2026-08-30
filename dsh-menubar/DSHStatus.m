@@ -574,27 +574,27 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [harnessItem setSubmenu:harnessSub];
     [menu addItem:harnessItem];
 
-    // 一键生成 WorkBuddy「添加模型」所需字段并写入剪贴板。
-    // WorkBuddy 没有把本地模型配置落盘成可写文件，所以用「生成→复制→粘贴」半自动。
-    NSMenuItem *wbItem = [[NSMenuItem alloc] initWithTitle:@"📋 复制 WorkBuddy 配置"
+    // 一键把本地模型配置写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）。
+    // 等价于在 WorkBuddy「添加模型」对话框手动填一遍：dsh-manager.sh config-workbuddy 直接 upsert 进 models.json。
+    NSMenuItem *wbItem = [[NSMenuItem alloc] initWithTitle:@"📋 配置到 WorkBuddy"
                                                      action:nil keyEquivalent:@""];
     NSMenu *wbSub = [[NSMenu alloc] init];
     for (NSString *mid in omlxModels) {
         NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:mid
-                                                    action:@selector(copyWorkBuddyConfig:)
+                                                    action:@selector(configWorkBuddyModel:)
                                              keyEquivalent:@""];
         mi.target = self;
         mi.representedObject = mid;
         [wbSub addItem:mi];
     }
     NSMenuItem *wbLc = [[NSMenuItem alloc] initWithTitle:@"Qwen3-14B-abliterated (llama.cpp)"
-                                                    action:@selector(copyWorkBuddyConfig:)
+                                                    action:@selector(configWorkBuddyModel:)
                                              keyEquivalent:@""];
     wbLc.target = self;
     wbLc.representedObject = @"qwen3-14b-ablit";
     [wbSub addItem:wbLc];
     NSMenuItem *wbL8 = [[NSMenuItem alloc] initWithTitle:@"Qwen3-8B-abliterated (llama.cpp)"
-                                                    action:@selector(copyWorkBuddyConfig:)
+                                                    action:@selector(configWorkBuddyModel:)
                                              keyEquivalent:@""];
     wbL8.target = self;
     wbL8.representedObject = @"qwen3-8b-ablit";
@@ -657,8 +657,8 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 }
 
 // 点菜单栏子项 → 直接把模型配置写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json），
-// 并把脚本输出复制到剪贴板，弹窗回显写入结果。
-- (void)copyWorkBuddyConfig:(NSMenuItem *)sender {
+// 并把脚本输出复制到剪贴板便于查看，弹窗回显写入结果。
+- (void)configWorkBuddyModel:(NSMenuItem *)sender {
     NSString *mid = sender.representedObject;
     if (!mid.length) return;
     NSTask *task = [[NSTask alloc] init];
