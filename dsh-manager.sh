@@ -18,7 +18,7 @@
 #   ./dsh-manager.sh mem                   # 仅内存占用
 #   ./dsh-manager.sh models                # 列出已注册模型
 #   ./dsh-manager.sh config-harness [model_id]   # 把本地模型配置为 DeepSeekHarness(DSH Web)默认模型
-#   ./dsh-manager.sh config-workbuddy [model_id]   # 生成可粘贴到 WorkBuddy「添加模型」的配置文本
+#   ./dsh-manager.sh config-workbuddy [model_id]   # 直接写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）
 #   ./dsh-manager.sh help                  # 本帮助
 #
 # 要求: macOS, bash 3.2+（系统自带即可）, curl, llama-server, omlx, node。
@@ -624,8 +624,11 @@ print("  ✓ 已将 %s 设为 DeepSeekHarness 默认模型 (provider=%s)" % (tar
 PYEOF
 }
 
-# 把指定本地模型生成一份可直接复制到 WorkBuddy「添加模型」对话框的文本。
-# WorkBuddy 不把这些配置落盘成可写文件，所以做成「生成→复制→粘贴」半自动。
+# 把指定本地模型直接写入 WorkBuddy 的自定义模型库（~/.workbuddy/models.json）。
+# 等价于在 WorkBuddy「添加模型」对话框里手动填一遍：upsert 进 models.json 数组，
+# 同 id 已存在时仅更新结构性字段（name/vendor/url/apiKey/useCustomProtocol），
+# 保留用户此前勾选的工具调用/图片/推理开关；不存在则新增（能力字段用模型默认能力）。
+# 写入前自动备份为 models.json.bak。
 cmd_config_workbuddy() {
   local model_id="${1:-}"
   local py; py="$(pybin)"
@@ -634,52 +637,120 @@ cmd_config_workbuddy() {
     [ -z "$model_id" ] || [ "$model_id" = "none" ] && model_id="Qwen3.5-9B-MLX-4bit"
   fi
   echo "  目标模型: $model_id"
-  local settings="$HOME/.dsh/settings.yaml"
-  [ -f "$settings" ] || { echo "✗ 找不到 $settings"; exit 1; }
-  "$py" - "$settings" "$model_id" <<'PYEOF'
-import sys, yaml
-path, model_id = sys.argv[1], sys.argv[2]
-doc = yaml.safe_load(open(path, encoding='utf-8'))
-prov_root = (doc.get('llm-pi-ai') or {}).get('providers', {}) or {}
+  local ds="${HOME}/.dsh/settings.yaml"
+  local mj="${HOME}/.workbuddy/models.json"
+  echo "  WorkBuddy 模型库: $mj"
+  "$py" - "$model_id" "$ds" "$mj" <<'PYEOF'
+import sys, json, os, re, shutil, tempfile
+
+model_id, ds_yaml, mj = sys.argv[1], sys.argv[2], sys.argv[3]
 low = model_id.lower()
-target_id, endpoint = None, None
-# 1) 优先从 settings.yaml 读取 base_url + model id
-for prov, cfg in prov_root.items():
-    url = cfg.get('base_url') or cfg.get('baseURL') or ''
-    for m in (cfg.get('models') or []):
-        mid = m.get('id', '')
-        if mid == model_id or low in mid.lower() or low in (m.get('name', '') or '').lower():
-            target_id, endpoint = mid, url.rstrip('/') + '/chat/completions'
-            break
-    if target_id:
-        break
-# 2) 兜底：用已知的本地端口与模型名
-if not target_id:
-    def fallback(e, m):
-        global target_id, endpoint
-        target_id, endpoint = m, e
-    if 'qwen3-14b' in low or low == 'qwen3-14b-ablit':
-        fallback('http://127.0.0.1:8002/v1/chat/completions', 'Qwen3-14B-abliterated.Q4_K_M')
-    elif 'qwen3-8b' in low or low == 'qwen3-8b-ablit':
-        fallback('http://127.0.0.1:8001/v1/chat/completions', 'Qwen3-8B-abliterated-v2.Q4_K_M')
-    elif 'hermes' in low:
-        fallback('http://127.0.0.1:8000/v1/chat/completions', 'Hermes-4-14B-4bit')
-    elif '4b' in low:
-        fallback('http://127.0.0.1:8000/v1/chat/completions', 'Qwen3.5-4B-MLX-4bit')
+real_id = model_id   # 用户传入的 id 即 models.json 里的条目 id
+
+# ---- 1) 解析 endpoint（仅决定接口地址，不改变 real_id） ----
+endpoint = None
+if os.path.exists(ds_yaml):
+    try:
+        import yaml
+        doc = yaml.safe_load(open(ds_yaml, encoding='utf-8'))
+        prov_root = (doc.get('llm-pi-ai') or {}).get('providers', {}) or {}
+        for prov, cfg in prov_root.items():
+            url = cfg.get('base_url') or cfg.get('baseURL') or ''
+            if not url:
+                continue
+            for m in (cfg.get('models') or []):
+                mid = m.get('id', '')
+                if mid == model_id or low in mid.lower() or low in (m.get('name', '') or '').lower():
+                    endpoint = url.rstrip('/') + '/chat/completions'
+                    break
+            if endpoint:
+                break
+    except Exception as e:
+        print("  （settings.yaml 解析失败，走兜底端口）%s" % e)
+
+# 兜底端口映射（只定 endpoint）
+if not endpoint:
+    if 'qwen3-14b' in low or low.endswith('14b'):
+        endpoint = 'http://127.0.0.1:8002/v1/chat/completions'
+    elif 'qwen3-8b' in low or '8b-ablit' in low:
+        endpoint = 'http://127.0.0.1:8001/v1/chat/completions'
+    else:  # oMLX：9B / 4B / Hermes 等默认 8000
+        endpoint = 'http://127.0.0.1:8000/v1/chat/completions'
+
+# 规范化 host：裸 ':8000' 补成 localhost
+if endpoint.startswith('http://:') or endpoint.startswith('https://:'):
+    endpoint = endpoint.replace('://:', '://localhost:', 1)
+
+# ---- 2) 能力字段默认值（仅新增条目时采用） ----
+m = re.search(r':(\d+)/', endpoint)
+port = m.group(1) if m else '8000'
+if port == '8000':                                   # oMLX
+    d_tool = True if ('9b' in low or 'hermes' in low) else False
+    d_img, d_reason = False, False
+else:                                               # llama.cpp GGUF（8001/8002）
+    d_tool, d_img, d_reason = False, False, True
+
+entry = {
+    "id": real_id,
+    "name": real_id,
+    "vendor": "Custom",
+    "url": endpoint,
+    "apiKey": "local",
+    "supportsToolCall": d_tool,
+    "supportsImages": d_img,
+    "supportsReasoning": d_reason,
+    "useCustomProtocol": False,
+}
+
+# ---- 3) 读取（失败则报错退出，绝不覆盖原文件） ----
+arr = []
+if os.path.exists(mj):
+    try:
+        with open(mj, encoding='utf-8') as f:
+            arr = json.load(f)
+        if not isinstance(arr, list):
+            raise ValueError("models.json 顶层不是数组")
+    except Exception as e:
+        print("✗ 读取 %s 失败：%s" % (mj, e))
+        print("  为安全起见未做任何修改。请确认 WorkBuddy 未正在写入该文件后重试。")
+        sys.exit(1)
+
+existing = next((e for e in arr if e.get('id') == real_id), None)
+dirty = False
+if existing:
+    for k in ("name", "vendor", "url", "apiKey", "useCustomProtocol"):
+        if existing.get(k) != entry[k]:
+            existing[k] = entry[k]
+            dirty = True
+    if dirty:
+        print("  ✓ 已更新既有条目: %s" % real_id)
     else:
-        fallback('http://127.0.0.1:8000/v1/chat/completions', 'Qwen3.5-9B-MLX-4bit')
-print("""WorkBuddy 本地模型配置（自定义 / Custom）
-========================================
-提供商：自定义 / Custom
-接口地址：%s
-API Key：local（本地无需鉴权）
-模型名称：%s
-工具调用：✅
-图片输入：☐
-推理模式：☐
-========================================
-复制后打开 WorkBuddy → 设置 → 模型 → 添加模型 → 自定义，粘贴保存即可。
-""" % (endpoint, target_id))
+        print("  • 已是最新配置（无需改动）: %s" % real_id)
+else:
+    arr.append(entry)
+    dirty = True
+    print("  + 已新增自定义模型: %s" % real_id)
+
+# ---- 4) 仅在确有改动时备份 + 原子写回 ----
+if dirty:
+    if os.path.exists(mj):
+        shutil.copy2(mj, mj + ".bak")
+    d = os.path.dirname(mj) or '.'
+    fd, tmp = tempfile.mkstemp(dir=d, suffix='.tmp')
+    try:
+        with os.fdopen(fd, 'w', encoding='utf-8') as f:
+            json.dump(arr, f, ensure_ascii=False, indent=2)
+            f.write("\n")
+        os.replace(tmp, mj)   # 原子替换：要么全成功，要么原文件不动
+    except Exception:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
+
+print("  => WorkBuddy 模型库现有 %d 条自定义模型" % len(arr))
+print("  接口地址: %s" % endpoint)
+print("  工具调用: %s  推理: %s  图片: %s" % (entry['supportsToolCall'], entry['supportsReasoning'], entry['supportsImages']))
+print("  提示：若 WorkBuddy 未立即显示该模型，请重启 WorkBuddy 使其重新读取 models.json")
 PYEOF
 }
 

@@ -656,7 +656,8 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [alert runModal];
 }
 
-// 点菜单栏子项 → 生成 WorkBuddy「添加模型」所需字段，写入系统剪贴板并弹窗回显。
+// 点菜单栏子项 → 直接把模型配置写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json），
+// 并把脚本输出复制到剪贴板，弹窗回显写入结果。
 - (void)copyWorkBuddyConfig:(NSMenuItem *)sender {
     NSString *mid = sender.representedObject;
     if (!mid.length) return;
@@ -677,7 +678,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [task launchAndReturnError:&err];
     if (err) {
         NSAlert *a = [[NSAlert alloc] init];
-        a.messageText = @"生成失败";
+        a.messageText = @"配置失败";
         a.informativeText = [NSString stringWithFormat:@"无法执行 config-workbuddy: %@", err];
         [a runModal];
         return;
@@ -689,7 +690,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [[NSPasteboard generalPasteboard] clearContents];
     [[NSPasteboard generalPasteboard] setString:out forType:NSPasteboardTypeString];
     NSAlert *alert = [[NSAlert alloc] init];
-    alert.messageText = [NSString stringWithFormat:@"已复制 %@ 的 WorkBuddy 配置", mid];
+    alert.messageText = [NSString stringWithFormat:@"已写入 WorkBuddy 模型库：%@", mid];
     alert.informativeText = out;
     [alert runModal];
 }

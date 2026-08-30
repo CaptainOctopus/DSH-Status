@@ -60,7 +60,7 @@ def run_config_harness(model_id=None, timeout=150):
 
 
 def run_config_workbuddy(model_id=None, timeout=150):
-    """生成可粘贴到 WorkBuddy「添加模型」对话框的配置文本。"""
+    """把指定本地模型直接写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）。"""
     args = ["bash", SCRIPT, "config-workbuddy"]
     if model_id:
         args.append(model_id)

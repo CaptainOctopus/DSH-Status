@@ -8,7 +8,7 @@
 - 菜单栏原生 App（Objective-C + Cocoa）：状态栏实时显示内存占用，下拉可一键启停各后端
 - 网页控制台（`:8899`，零额外依赖，纯标准库）：模型层级可展开，手动重扫
 - 命令行脚本（`dshctl`）：`status` / `mem` / `models` / `load` / `unload` / `config-harness` / `config-workbuddy`
-- 一键把本地模型配置到 **DeepSeekHarness（DSH Web）** 或生成 **WorkBuddy** 可粘贴配置
+- 一键把本地模型配置到 **DeepSeekHarness（DSH Web）** 或写入 **WorkBuddy** 自定义模型库（`~/.workbuddy/models.json`）
 - 自包含安装包 `DSH-Status.dmg`：内联 Python，拷到任意 Mac 拖进「应用程序」即用，无需本机 WorkBuddy / Python / Node
 
 ---
@@ -21,7 +21,7 @@
 | 后端监控   | oMLX `:8000`、llama.cpp `:8001`/`:8002`、DSH Web `:3080`、控制台 `:8899` 存活与状态 |
 | 模型权重视图 | 逐模型权重 / 常驻内存，父（omlx 服务）—子（9B/4B/Hermes-14B）层级展开                          |
 | 一键启停   | 菜单栏 / 网页 / 命令行都能拉起或停掉指定后端或模型                                             |
-| 一键配置   | → Harness 改写 `settings.yaml`；📋WB 复制 WorkBuddy「添加模型」字段                   |
+| 一键配置   | → Harness 改写 `settings.yaml`；📋WB 直接写入 WorkBuddy 自定义模型库（models.json）     |
 | 登录自启   | 首次运行注册 LaunchAgent（崩溃自重启、主动退出不复活）                                        |
 | 跨机可移植  | `DSH-Status.dmg` 自包含，model-less 机器上也能只看内存与状态                             |
 
@@ -157,9 +157,9 @@ bash build.sh --install-local   # 额外装到本机 ~/Applications 并启动
   ```bash
   ./dsh-manager.sh config-harness [model_id]   # 支持模糊匹配，写前自动备份
   ```
-- **WorkBuddy**：点「📋WB」或菜单「📋 复制 WorkBuddy 配置」，生成并复制  
-  「添加模型」对话框所需字段（自定义 / endpoint `http://localhost:8000/v1/chat/completions`  
-  / 模型名 / 工具调用✅），粘贴到 WorkBuddy 设置 → 模型 → 添加模型 → 自定义 即可。
+- **WorkBuddy**：点「📋WB」或菜单「📋 配置到 WorkBuddy」，直接 upsert 进  
+  `~/.workbuddy/models.json` 的「自定义模型」分组（vendor=Custom，endpoint `http://localhost:8000/v1/chat/completions`  
+  / apiKey=local / 工具调用按模型能力）。写入前自动备份、写回原子替换，**无需手动粘贴**。
 
 ---
 
