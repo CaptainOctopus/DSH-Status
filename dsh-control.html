@@ -1,0 +1,210 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>DSH Manager 控制台</title>
+<style>
+:root{
+  --bg:#0e1117; --panel:#161b22; --panel2:#1c232c; --border:#2a3038;
+  --fg:#e6edf3; --muted:#8b949e; --accent:#3b82f6; --green:#3fb950;
+  --yellow:#d29922; --red:#f85149; --grey:#6e7681;
+}
+*{box-sizing:border-box}
+body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"PingFang SC",sans-serif;background:var(--bg);color:var(--fg);font-size:14px}
+header{display:flex;align-items:center;justify-content:space-between;padding:16px 22px;border-bottom:1px solid var(--border);background:var(--panel);flex-wrap:wrap;gap:10px}
+h1{font-size:17px;margin:0;font-weight:600}
+.sub{color:var(--muted);font-size:12px;margin-top:3px}
+.wrap{max-width:920px;margin:0 auto;padding:20px 22px 40px}
+.row{display:flex;gap:10px;flex-wrap:wrap}
+button{cursor:pointer;border:1px solid var(--border);background:var(--panel2);color:var(--fg);padding:9px 14px;border-radius:8px;font-size:13px;transition:.15s}
+button:hover{border-color:var(--accent);background:#222b36}
+button:disabled{opacity:.4;cursor:not-allowed}
+button.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+button.danger{background:#3a1d1d;border-color:#5a2a2a;color:#ffb3b3}
+button.sm{padding:5px 10px;font-size:12px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:10px;padding:16px 18px;margin-bottom:18px}
+.card h2{font-size:13px;margin:0 0 12px;color:var(--muted);font-weight:600;text-transform:uppercase;letter-spacing:.04em}
+.mem-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:8px}
+.mem-head .big{font-size:22px;font-weight:600}
+.bar{height:10px;background:#21262d;border-radius:6px;overflow:hidden}
+.bar>i{display:block;height:100%;border-radius:6px;transition:width .4s}
+table{width:100%;border-collapse:collapse}
+th,td{text-align:left;padding:10px 8px;border-bottom:1px solid var(--border);font-size:13px}
+th{color:var(--muted);font-weight:600;font-size:12px}
+td .act{display:flex;gap:6px;justify-content:flex-end}
+.badge{display:inline-block;padding:2px 8px;border-radius:20px;font-size:11px;font-weight:600}
+.b-run{background:rgba(63,185,80,.15);color:var(--green)}
+.b-load{background:rgba(210,153,34,.15);color:var(--yellow)}
+.b-off{background:rgba(110,118,129,.18);color:var(--grey)}
+.subrow{color:var(--muted);font-size:12px;padding:4px 8px 4px 26px}
+.caret{cursor:pointer;display:inline-block;width:14px;color:var(--muted);user-select:none}
+.caret:hover{color:var(--accent)}
+.log{background:#0a0d12;border:1px solid var(--border);border-radius:8px;padding:12px;font-family:ui-monospace,SFMono-Regular,Menlo,monospace;font-size:12px;white-space:pre-wrap;color:#9da7b3;max-height:180px;overflow:auto;min-height:60px}
+.toast{position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--accent);padding:10px 16px;border-radius:8px;opacity:0;transition:.3s;pointer-events:none;font-size:13px}
+.toast.show{opacity:1}
+</style>
+</head>
+<body>
+<header>
+  <div><h1>DSH Manager 控制台</h1><div class="sub">本地模型 &amp; Harness 统一控制 · 仅本机 127.0.0.1</div></div>
+  <div class="row">
+    <button class="primary" onclick="act('start')">▶ 启动全套</button>
+    <button class="danger" onclick="act('stop')">■ 停止全部</button>
+  </div>
+</header>
+<div class="wrap">
+  <div class="card">
+    <h2>内存占用 <span style="text-transform:none;color:var(--grey);font-weight:400">（与系统监视器对齐）</span></h2>
+    <div class="mem-head"><span class="big" id="memUsed">—</span><span id="memSub" style="color:var(--muted)"></span></div>
+    <div class="bar"><i id="memBar" style="width:0%"></i></div>
+    <div id="memDetail" style="color:var(--muted);font-size:12px;margin-top:8px"></div>
+  </div>
+
+  <div class="card">
+    <h2>服务</h2>
+    <table>
+      <thead><tr><th>服务</th><th>端口</th><th>状态</th></tr></thead>
+      <tbody id="svcBody"></tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <h2>模型状态
+      <button class="sm" id="rescanBtn" onclick="rescan()" style="float:right">⟳ 重新扫描模型</button>
+    </h2>
+    <table>
+      <thead><tr><th>模型</th><th>类型</th><th>端口</th><th>状态</th><th>占用</th><th></th></tr></thead>
+      <tbody id="tbody"></tbody>
+    </table>
+    <div style="color:var(--muted);font-size:12px;margin-top:8px">
+      模型清单与权重大小来自磁盘扫描，已缓存；增删模型后点「重新扫描模型」刷新。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>操作输出</h2>
+    <div class="log" id="log">点击上方按钮执行操作…</div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+<script>
+if(location.hostname!=='127.0.0.1' || location.port!=='8899'){
+  document.body.innerHTML='<div style="padding:32px;color:#f85149;font-family:sans-serif;line-height:1.7">'+
+    '<h2>打开方式不对</h2>'+
+    '<p>本控制台必须由 <code>dsh-web-control.py</code> 后端提供，请通过 <b>http://127.0.0.1:8899</b> 访问。<br>'+
+    '直接打开 HTML 文件 / preview 静态链接没有后端 API，点击按钮会 Failed to fetch。</p>'+
+    '<p style="color:#8b949e">启动方式：在终端执行 <code>dshweb</code>，再浏览器打开上面的地址。</p></div>';
+  throw new Error('wrong host');
+}
+const badge={running:['b-run','运行中'],loading:['b-load','加载中'],disabled:['b-off','已停用']};
+function render(s){
+  document.getElementById('memUsed').textContent=s.mem.used_h+' 已用';
+  document.getElementById('memSub').textContent=`总 ${s.mem.total_h} · 可用 ${s.mem.available_h} (${100-s.mem.used_pct}%)`;
+  const bar=document.getElementById('memBar');
+  bar.style.width=s.mem.used_pct+'%';
+  bar.style.background=s.mem.used_pct>85?'var(--red)':s.mem.used_pct>70?'var(--yellow)':'var(--green)';
+  document.getElementById('memDetail').textContent=
+    `空闲 ${s.mem.free_h} · 可回收缓存 ${s.mem.cached_h} · 被压缩 ${s.mem.compressed_h}`;
+  const sb=document.getElementById('svcBody'); sb.innerHTML='';
+  (s.services||[]).forEach(v=>{
+    const [bc,bl]=badge[v.state];
+    sb.innerHTML+=`<tr><td><b>${v.name}</b></td><td>:${v.port}</td>`+
+      `<td><span class="badge ${bc}">${bl}</span></td></tr>`;
+  });
+  const tb=document.getElementById('tbody'); tb.innerHTML='';
+  const expanded = window.__expanded || (window.__expanded = new Set());
+  s.models.forEach(m=>{
+    const [bc,bl]=badge[m.state];
+    const w = m.weight ? `约 ${m.weight} GB 权重` : '—';
+    const mem = (m.state === 'running' || m.state === 'loading') && m.rss !== '0 B'
+                ? `${m.rss} / ${w}`
+                : w;
+    const hasSub = m.sub && m.sub.length;
+    const isExp = expanded.has(m.name);
+    const caret = hasSub
+      ? `<span class="caret" onclick="toggleSub('${m.name}')">${isExp?'▾':'▸'}</span> `
+      : '';
+    const tr=document.createElement('tr');
+    tr.innerHTML=`<td><b>${caret}${m.name}</b></td><td>${m.type}</td><td>:${m.port}</td>`+
+      `<td><span class="badge ${bc}">${bl}</span></td><td>${mem}</td>`+
+      `<td><div class="act">`+
+      (m.state==='running'
+        ?`<button class="sm danger" onclick="act('unload','${m.name}')">停用</button>`
+        :`<button class="sm" onclick="act('load','${m.name}')">加载</button>`)+
+      `<button class="sm" onclick="act('config-harness','${m.name}')" title="设为 DeepSeekHarness 默认模型">→Harness</button>`+
+      `<button class="sm" onclick="copyWorkBuddy('${m.name}')" title="复制 WorkBuddy 配置">📋WB</button>`+
+      `</div></td>`;
+    tb.appendChild(tr);
+    // 展开层级：子模型各自一行，带常驻状态与权重大小
+    if(hasSub && isExp){
+      m.sub.forEach(sm=>{
+        const sr=document.createElement('tr'); sr.className='subrow';
+        const stTxt = m.state==='running'
+          ? (sm.resident ? '● 在内存' : '○ 待命/按需加载')
+          : '○ 未加载';
+        const sw = sm.weight ? `约 ${sm.weight} GB 权重` : '—';
+        sr.innerHTML=`<td colspan="6" style="padding-left:30px">└ ${sm.name} · ${stTxt} · ${sw} `+
+          `<button class="sm" onclick="act('config-harness','${sm.name}')" title="设为 DeepSeekHarness 默认模型">→Harness</button>`+
+          ` <button class="sm" onclick="copyWorkBuddy('${sm.name}')" title="复制 WorkBuddy 配置">📋WB</button></td>`;
+        tb.appendChild(sr);
+      });
+    }
+  });
+}
+function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
+function log(msg){const el=document.getElementById('log');el.textContent=msg;el.scrollTop=el.scrollHeight;}
+async function act(cmd,name){
+  const label=cmd+(name?` ${name}`:'');
+  toast('执行中: '+label);
+  log('$ dshctl '+label+'\n执行中…');
+  const url='/api/action?cmd='+cmd+(name?('&name='+encodeURIComponent(name)):'');
+  try{
+    const r=await fetch(url);const j=await r.json();
+    log('$ dshctl '+label+'\n'+(j.output||'(无输出)'));
+    toast(j.ok?'完成: '+label:'失败: '+label);
+  }catch(e){log('请求失败: '+e);toast('请求失败');}
+  refresh();
+}
+async function copyWorkBuddy(name){
+  const label='复制 WorkBuddy 配置: '+name;
+  toast(label);
+  log('$ dshctl config-workbuddy '+name+'\n生成中…');
+  try{
+    const r=await fetch('/api/action?cmd=config-workbuddy&name='+encodeURIComponent(name));
+    const j=await r.json();
+    const text=(j.output||'(无输出)');
+    log('$ dshctl config-workbuddy '+name+'\n'+text);
+    if(navigator.clipboard){
+      await navigator.clipboard.writeText(text);
+      toast('已复制: '+name);
+    }else{
+      toast('复制失败：浏览器限制');
+    }
+  }catch(e){log('请求失败: '+e);toast('请求失败');}
+}
+async function refresh(){try{const r=await fetch('/api/status');const s=await r.json();window.__last=s;render(s);}catch(e){}}
+function toggleSub(name){
+  const e=window.__expanded||(window.__expanded=new Set());
+  if(e.has(name)) e.delete(name); else e.add(name);
+  if(window.__last) render(window.__last);
+}
+async function rescan(){
+  const btn=document.getElementById('rescanBtn');
+  if(btn){btn.disabled=true;btn.textContent='扫描中…';}
+  toast('正在扫描模型目录…');
+  try{
+    const r=await fetch('/api/rescan');const j=await r.json();
+    if(j.ok){
+      const nw=Object.keys(j.weights||{}).length, no=Object.keys(j.omlx||{}).length;
+      log(`扫描完成：${nw} 个模型权重，${no} 个 oMLX 子模型`);
+      toast('扫描完成');
+    }else{ toast('扫描失败'); log('扫描失败: '+(j.error||'')); }
+  }catch(e){ toast('扫描失败: '+e); log('扫描失败: '+e); }
+  finally{ if(btn){btn.disabled=false;btn.textContent='⟳ 重新扫描模型';} }
+  refresh();
+}
+refresh();setInterval(refresh,3000);
+</script>
+</body>
+</html>

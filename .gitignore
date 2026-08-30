@@ -1,0 +1,16 @@
+# 编译产物（可由 dsh-menubar/build.sh 重新生成）
+dist/
+dsh-menubar/DSHStatus
+
+# Python 缓存
+__pycache__/
+*.pyc
+
+# 系统 / 临时
+.DS_Store
+nohup.out
+
+# 模型权重（数据，不随源码分发）
+llamacpp-models/
+mlx-agent-lab/
+opencode-demo/
