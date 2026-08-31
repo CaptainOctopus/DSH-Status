@@ -576,7 +576,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 
     // 一键把本地模型配置写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）。
     // 等价于在 WorkBuddy「添加模型」对话框手动填一遍：dsh-manager.sh config-workbuddy 直接 upsert 进 models.json。
-    NSMenuItem *wbItem = [[NSMenuItem alloc] initWithTitle:@"📋 配置到 WorkBuddy"
+    NSMenuItem *wbItem = [[NSMenuItem alloc] initWithTitle:@"⚙ 配置到 WorkBuddy"
                                                      action:nil keyEquivalent:@""];
     NSMenu *wbSub = [[NSMenu alloc] init];
     for (NSString *mid in omlxModels) {

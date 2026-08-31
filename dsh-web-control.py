@@ -371,13 +371,16 @@ class H(BaseHTTPRequestHandler):
                 q = parse_qs(urlparse(self.path).query)
                 cmd = q.get("cmd", [""])[0]
                 name = q.get("name", [""])[0]
-                if cmd not in ("start", "stop", "load", "unload", "config-harness", "config-workbuddy"):
+                if cmd not in ("start", "stop", "load", "unload", "config-harness",
+                               "config-workbuddy", "web-start", "web-stop"):
                     self._send(400, json.dumps({"ok": False, "error": f"bad cmd: {cmd}"}))
                     return
                 if cmd == "config-harness":
                     out = run_config_harness(name)
                 elif cmd == "config-workbuddy":
                     out = run_config_workbuddy(name)
+                elif cmd in ("web-start", "web-stop"):
+                    out = run("web", "start" if cmd == "web-start" else "stop")
                 else:
                     out = run(cmd, name or None)
                 self._send(200, json.dumps(

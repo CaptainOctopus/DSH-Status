@@ -21,7 +21,7 @@
 | 后端监控   | oMLX `:8000`、llama.cpp `:8001`/`:8002`、DSH Web `:3080`、控制台 `:8899` 存活与状态 |
 | 模型权重视图 | 逐模型权重 / 常驻内存，父（omlx 服务）—子（9B/4B/Hermes-14B）层级展开                          |
 | 一键启停   | 菜单栏 / 网页 / 命令行都能拉起或停掉指定后端或模型                                             |
-| 一键配置   | → Harness 改写 `settings.yaml`；📋WB 直接写入 WorkBuddy 自定义模型库（models.json）     |
+| 一键配置   | → Harness 改写 `settings.yaml`；⚙WB 直接写入 WorkBuddy 自定义模型库（models.json）     |
 | 登录自启   | 首次运行注册 LaunchAgent（崩溃自重启、主动退出不复活）                                        |
 | 跨机可移植  | `DSH-Status.dmg` 自包含，model-less 机器上也能只看内存与状态                             |
 
@@ -157,7 +157,7 @@ bash build.sh --install-local   # 额外装到本机 ~/Applications 并启动
   ```bash
   ./dsh-manager.sh config-harness [model_id]   # 支持模糊匹配，写前自动备份
   ```
-- **WorkBuddy**：点「📋WB」或菜单「📋 配置到 WorkBuddy」，直接 upsert 进  
+- **WorkBuddy**：点「⚙WB」或菜单「⚙ 配置到 WorkBuddy」，直接 upsert 进  
   `~/.workbuddy/models.json` 的「自定义模型」分组（vendor=Custom，endpoint `http://localhost:8000/v1/chat/completions`  
   / apiKey=local / 工具调用按模型能力）。写入前自动备份、写回原子替换，**无需手动粘贴**。
 
