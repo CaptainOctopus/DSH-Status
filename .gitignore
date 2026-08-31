@@ -1,6 +1,6 @@
-# 编译产物（可由 dsh-menubar/build.sh 重新生成）
-dist/
-dsh-menubar/DSHStatus
+# 编译产物（可由 src/dsh-menubar/build.sh 重新生成）
+src/dist/
+src/dsh-menubar/DSHStatus
 
 # Python 缓存
 __pycache__/

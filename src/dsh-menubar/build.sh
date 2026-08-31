@@ -25,7 +25,7 @@ PY_SRC="$HOME/.workbuddy/binaries/python/versions/3.13.12"
 # 输出目录与产物
 DIST="$ROOT_DIR/dist"
 APP_DIR="$DIST/$APP_NAME.app"
-DMG="$ROOT_DIR/DSH-Status.dmg"
+DMG="$(dirname "$ROOT_DIR")/DSH-Status.dmg"   # 安装包留在项目根（src/ 之外）
 
 DO_INSTALL_LOCAL=0
 [ "${1:-}" = "--install-local" ] && DO_INSTALL_LOCAL=1
