@@ -87,6 +87,7 @@ dshweb            # 启动后端，然后浏览器开 http://127.0.0.1:8899
 dshctl status     # 看整体状态
 dshctl config-harness [model_id]   # 把本地模型配置为 DeepSeekHarness(DSH Web)默认模型
 dshctl config-workbuddy [model_id] # 直接写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）
+                                   # 端口实扫生成；嵌入模型（文件名含 embed）拒绝写入并提示
 dshctl help       # 全部子命令
 dshctl web start  # 单独起 DSH Web
 dshctl mem        # 内存占用（与系统监视器口径对齐）
