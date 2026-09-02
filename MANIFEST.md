@@ -1,7 +1,7 @@
 # DSH Status 工具集 — 交付清单
 
-> 生成时间：2026-08-30 17:09
-> 项目根：`~/WorkBuddy/2026-08-28-23-12-48/`
+> 生成时间：2026-08-30 17:09（路径与目录布局于 2026-08-31 更新）
+> 项目根：`~/WorkBuddy/DSH-status/`（源码统一在 `src/` 下，为唯一真源）
 > 冒烟测试：10/10 全通过（退出码 0）
 
 DSH Status 是一套**纯本地、只监听 127.0.0.1 的个人小工具**，由三部分组成：
@@ -15,19 +15,24 @@ DSH Status 是一套**纯本地、只监听 127.0.0.1 的个人小工具**，由
 
 ## A. 项目源码（单一真源，工作区）
 
-| 文件 | 作用 | 大小 / 时间 |
+| 文件（相对项目根） | 作用 | 大小 |
 |------|------|------------|
-| `dsh-manager.sh` | 命令行管理脚本（软链名 `dshctl`）：status / mem / models / web start\|stop / load / unload / omlx_scan / model_weights 等 | 17 KB / 14:36 |
-| `dsh-web-control.py` | 网页控制台后端 :8899（软链名 `dshweb`），零额外依赖，纯标准库 | 14 KB / 14:32 |
-| `dsh-control.html` | 网页控制台前端（深色 UI，模型可 ▸/▾ 展开层级，⟳ 手动重扫） | 10 KB / 14:33 |
-| `dsh-smoke-test.py` | 回归冒烟测试（10 项非侵入检查，锁核心契约） | 11 KB / 17:03 |
-| `dsh-menubar/DSHStatus.m` | 菜单栏 app 源码（Objective-C + Cocoa） | 27 KB / 14:35 |
-| `dsh-menubar/DSHStatus.swift` | Swift 备选源码（本机 CLT 修好 `SwiftBridging` 重定义后可启用） | 10 KB / 02:36 |
-| `dsh-menubar/build.sh` | 一键编译打包脚本（编译 → 组装 .app → ad-hoc 签名 → 生成 dmg 含 AppIcon） | 5 KB |
-| `dsh-menubar/make_icon.py` | 应用图标源脚本（深蓝紫 squircle + 发光青蓝波形 + 三个绿点） | 3 KB |
-| `dsh-menubar/AppIcon.icns` | 生成的应用图标（16~1024 各尺寸 10 张） | 284 KB |
-| `dsh-menubar/DSHStatus` | 已编译二进制（与 app 内一致，可独立运行；arm64，编译零警告） | 78 KB |
-| `mlx-agent-lab/models/` | oMLX 模型目录（磁盘扫描源）：Hermes-4-14B / Qwen3.5-4B / Qwen3.5-9B | — |
+| `src/dsh-manager.sh` | 命令行管理脚本（软链名 `dshctl`）：status / mem / models / web start\|stop / load / unload / omlx_scan / model_weights / config-harness / config-workbuddy 等 | 29.6 KB |
+| `src/dsh-web-control.py` | 网页控制台后端 :8899（软链名 `dshweb`），零额外依赖，纯标准库 | 14.9 KB |
+| `src/dsh-control.html` | 网页控制台前端（深色 UI，模型可 ▸/▾ 展开层级，⟳ 手动重扫） | 11.5 KB |
+| `src/dsh-smoke-test.py` | 回归冒烟测试（10 项非侵入检查，锁核心契约） | 10.5 KB |
+| `src/dsh-menubar/DSHStatus.m` | 菜单栏 app 源码（Objective-C + Cocoa） | 36.3 KB |
+| `src/dsh-menubar/DSHStatus.swift` | Swift 备选源码（本机 CLT 修好 `SwiftBridging` 重定义后可启用） | 10.1 KB |
+| `src/dsh-menubar/build.sh` | 一键编译打包脚本（编译 → 组装 .app → ad-hoc 签名 → 生成 dmg 含 AppIcon） | 5.6 KB |
+| `src/dsh-menubar/make_icon.py` | 应用图标源脚本（深蓝紫 squircle + 发光青蓝波形 + 三个绿点） | 2.7 KB |
+| `src/dsh-menubar/AppIcon.icns` | 生成的应用图标（16~1024 各尺寸 10 张） | 278 KB |
+| `src/dsh-menubar/DSHStatus` | 已编译二进制（与 app 内一致，可独立运行；arm64，编译零警告） | 96.1 KB |
+
+> 模型权重**不在本仓库内**（约 29 GB），原存放于旧工作区  
+> `~/WorkBuddy/2026-08-28-23-12-48/mlx-agent-lab/models`（Hermes-4-14B / Qwen3.5-4B / Qwen3.5-9B）  
+> 与 `~/WorkBuddy/2026-08-28-23-12-48/llamacpp-models`，由 `dsh-manager.sh` 按候选列表自动探测。  
+> **2026-08-31 更新**：上述权重已移入废纸篓（`~/.Trash/mlx-agent-lab-20260831`、
+> `~/.Trash/llamacpp-models-20260831`），本机现为 model-less 状态，可随时拖回原位恢复。
 
 ---
 
@@ -36,8 +41,8 @@ DSH Status 是一套**纯本地、只监听 127.0.0.1 的个人小工具**，由
 | 路径 | 说明 |
 |------|------|
 | `~/Applications/DSH Status.app` | 菜单栏 app（已签名，`LSUIElement=true` 隐藏 Dock 图标，自带 AppIcon.icns） |
-| `~/.local/bin/dshctl` → `~/WorkBuddy/2026-08-28-23-12-48/dsh-manager.sh` | 命令行入口软链（已在 PATH） |
-| `~/.local/bin/dshweb` → `~/WorkBuddy/2026-08-28-23-12-48/dsh-web-control.py` | 网页控制台入口软链（已在 PATH） |
+| `~/.local/bin/dshctl` → `~/WorkBuddy/DSH-status/src/dsh-manager.sh` | 命令行入口软链（已在 PATH） |
+| `~/.local/bin/dshweb` → `~/WorkBuddy/DSH-status/src/dsh-web-control.py` | 网页控制台入口软链（已在 PATH） |
 | `~/Library/LaunchAgents/com.rory.dshstatus.plist` | 登录自启（仅 Aqua 会话；`KeepAlive/SuccessfulExit=false`：崩溃自动重启、主动退出不复活） |
 
 > 系统安装的三处均**软链/指向工作区源码**，源码是唯一真源。重编译 `build.sh` 或改脚本后，软链与 plist 无需改动。
@@ -86,7 +91,7 @@ dshctl help       # 全部子命令
 dshctl web start  # 单独起 DSH Web
 dshctl mem        # 内存占用（与系统监视器口径对齐）
 # 改完任何一块做回归验证：
-python3 ~/WorkBuddy/2026-08-28-23-12-48/dsh-smoke-test.py
+python3 ~/WorkBuddy/DSH-status/src/dsh-smoke-test.py
 #   --quiet 仅打印 FAIL + 汇总；退出码 0 = 全过，非 0 = 有失败
 ```
 
@@ -100,7 +105,9 @@ rm -rf "$HOME/Applications/DSH Status.app" \
        "$HOME/Library/LaunchAgents/com.rory.dshstatus.plist"
 # 软链可选清理：
 rm -f ~/.local/bin/dshctl ~/.local/bin/dshweb
-# 源码保留在工作区，不需可一并删除 ~/WorkBuddy/2026-08-28-23-12-48/
+# 源码保留在 ~/WorkBuddy/DSH-status/，确认不再需要时可整体删除
+# ⚠️ 但请勿删除 ~/WorkBuddy/2026-08-28-23-12-48/mlx-agent-lab 与 llamacpp-models
+#    （约 29 GB 模型权重，仍被 dsh-manager.sh 探测引用）
 ```
 
 ---
@@ -119,6 +126,10 @@ rm -f ~/.local/bin/dshctl ~/.local/bin/dshweb
 10. 菜单栏二进制：存在且 `codesign` 有效
 
 > 设计原则=非侵入：只读命令不动状态；控制台仅在未运行时拉起临时实例做探针并保持运行；不触碰 :3080/:8000/:8001/:8002 启停。
+>
+> **model-less 降级（2026-08-31 新增）**：本机无模型权重时，第 2、3、7 项的「权重完整性」断言
+> 自动跳过（结果标注 `[model-less: ...]`），只校验命令与接口可正常返回，纯监控机器上仍为 10/10。
+> 模型目录可用环境变量 `DSH_MODELS_DIR` 覆盖；指向含子目录的位置时断言会重新生效。
 
 ---
 
@@ -148,7 +159,7 @@ rm -f ~/.local/bin/dshctl ~/.local/bin/dshweb
 
 ### 重新打包
 ```bash
-cd ~/WorkBuddy/2026-08-28-23-12-48/dsh-menubar
+cd ~/WorkBuddy/DSH-status/src/dsh-menubar
 bash build.sh                # 生成 dist/DSH Status.app + DSH-Status.dmg
 bash build.sh --install-local# 额外装到本机 ~/Applications 并启动
 ```

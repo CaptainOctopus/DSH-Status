@@ -16,6 +16,7 @@ import json
 import os
 import re
 import subprocess
+import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.parse import urlparse, parse_qs
 
@@ -27,12 +28,29 @@ DSH_WEB_PORT = 3080  # DSH Web 默认端口（用户 `dsh web` 起在此端口�
 # DSH Web 两种启动命令行，探测必须同时覆盖，否则匹配不到
 DSH_WEB_PATS = ("dsh web", "bin.js --profile web")
 
-# (name, type, port)
-MODELS = [
-    ("omlx", "omlx", 8000),
-    ("qwen3-8b-ablit", "llamacpp", 8001),
-    ("qwen3-14b-ablit", "llamacpp", 8002),
-]
+# 模型清单动态来自 dsh-manager.sh models_list（omlx + GGUF 目录实扫），
+# 缓存一次；/api/rescan 时强制刷新，磁盘增删模型后点「重新扫描」即跟随。
+_MODELS_CACHE = []
+
+
+def load_models(force=False):
+    """返回模型清单 [{name, type, port, embed}]，来自 manager 动态扫描。"""
+    global _MODELS_CACHE
+    if not force and _MODELS_CACHE:
+        return _MODELS_CACHE
+    models = []
+    try:
+        out = subprocess.run(["bash", SCRIPT, "models_list"],
+                             capture_output=True, text=True, timeout=15).stdout
+        for line in out.strip().split("\n"):
+            parts = line.strip().split("|")
+            if len(parts) == 4:
+                models.append({"name": parts[0], "type": parts[1],
+                               "port": int(parts[2]), "embed": parts[3] == "1"})
+    except Exception:
+        pass
+    _MODELS_CACHE = models
+    return models
 
 
 def run(cmd, name=None, timeout=150):
@@ -298,7 +316,8 @@ def probe_status():
 
     weights = model_weights()
     models = []
-    for name, typ, port in MODELS:
+    for m in load_models():
+        name, typ, port = m["name"], m["type"], m["port"]
         st = model_state(name, typ, port)
         pid = model_pid(name, typ, port)
         rss = model_rss(pid)
@@ -313,7 +332,7 @@ def probe_status():
                             "resident": mid in resident})
         models.append({
             "name": name, "type": typ, "port": port, "state": st,
-            "rss": hr(rss), "pct": pct, "sub": sub,
+            "rss": hr(rss), "pct": pct, "sub": sub, "embed": m["embed"],
             "weight": weights.get(name, ""),
         })
     return {
@@ -338,8 +357,68 @@ class H(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body.encode("utf-8"))
 
+    def _sse(self, event, data):
+        """推送一条 SSE 事件并立即 flush——流式的成败就在这个 flush 上。"""
+        self.wfile.write(("event: %s\n" % event).encode("utf-8"))
+        self.wfile.write(("data: %s\n\n" % json.dumps(data, ensure_ascii=False)).encode("utf-8"))
+        self.wfile.flush()
+
     def do_GET(self):
         path = self.path.split("?")[0]
+        if path == "/api/rescan_stream":
+            # 流式扫描：子进程每输出一行就推一条事件，前端「操作输出」
+            # 因此能真正做到「正在扫描 → 扫到一个列一个 → 扫描结束」。
+            try:
+                self.send_response(200)
+                self.send_header("Content-Type", "text/event-stream; charset=utf-8")
+                self.send_header("Cache-Control", "no-cache, no-transform")
+                self.send_header("X-Accel-Buffering", "no")
+                self.send_header("Access-Control-Allow-Origin", "*")
+                self.end_headers()
+                t0 = time.time()
+                count = 0
+                self._sse("phase", {"text": "正在扫描模型…"})
+                proc = subprocess.Popen(["bash", SCRIPT, "scan_report"],
+                                        stdout=subprocess.PIPE,
+                                        stderr=subprocess.STDOUT,
+                                        text=True, bufsize=1)
+                for line in proc.stdout:
+                    line = line.rstrip("\n")
+                    if not line:
+                        continue
+                    p = line.split("|")
+                    kind = p[0]
+                    if kind == "dir" and len(p) >= 3:
+                        label = "GGUF" if p[1] == "gguf" else "oMLX"
+                        # 目录不存在时如实告知，避免用户以为"扫了但没扫到"
+                        if p[2] == "none":
+                            self._sse("phase", {"text": "→ %s 目录不存在，跳过" % label})
+                        else:
+                            self._sse("phase", {"text": "→ 扫描 %s 目录: %s" % (label, p[2])})
+                    elif kind == "model" and len(p) >= 6:
+                        count += 1
+                        # 路径本身可能含 '|'，故用 join 还原剩余字段
+                        self._sse("model", {"name": p[1], "type": p[2], "port": p[3],
+                                            "gb": p[4], "path": "|".join(p[5:])})
+                    elif kind == "done" and len(p) >= 2:
+                        try:
+                            count = int(p[1])
+                        except ValueError:
+                            pass
+                proc.wait(timeout=60)
+                # 扫描完成才刷新缓存：下一个 /api/status 立即用上新清单
+                load_models(force=True)
+                model_weights(refresh=True)
+                omlx_scan(refresh=True)
+                _RESIDENT_CACHE["ts"] = 0.0
+                self._sse("done", {"count": count, "elapsed": round(time.time() - t0, 2)})
+            except Exception as e:
+                # 客户端中途断开（BrokenPipe）也会走到这里，属正常，吞掉即可
+                try:
+                    self._sse("fail", {"message": str(e)})
+                except Exception:
+                    pass
+            return
         if path in ("/", "/index.html"):
             try:
                 with open(PAGE, encoding="utf-8") as f:
@@ -354,14 +433,16 @@ class H(BaseHTTPRequestHandler):
             self._send(200, json.dumps(probe_status()["mem"], ensure_ascii=False))
             return
         if path == "/api/rescan":
-            # 手动触发磁盘扫描：清缓存后重新扫描模型目录与权重大小。
+            # 手动触发磁盘扫描：清缓存后重新扫描模型清单、模型目录与权重大小。
             # 常态轮询不再扫描，避免每 5 秒起子进程遍历磁盘。
             try:
+                load_models(force=True)
                 model_weights(refresh=True)
                 omlx_scan(refresh=True)
                 _RESIDENT_CACHE["ts"] = 0.0
                 self._send(200, json.dumps(
-                    {"ok": True, "weights": model_weights(), "omlx": omlx_scan()},
+                    {"ok": True, "models": load_models(),
+                     "weights": model_weights(), "omlx": omlx_scan()},
                     ensure_ascii=False))
             except Exception as e:
                 self._send(500, json.dumps({"ok": False, "error": str(e)}, ensure_ascii=False))

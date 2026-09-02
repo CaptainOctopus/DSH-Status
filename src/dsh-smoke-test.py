@@ -20,6 +20,11 @@ DSH 三件套冒烟测试 (smoke test)
     python3 dsh-smoke-test.py            # 全量跑, 退出码 0=全过, 非0=有失败
     python3 dsh-smoke-test.py --quiet    # 只打印 FAIL 与汇总
 
+model-less 降级:
+    本机若无模型权重, omlx_scan / model_weights / /api/rescan 三项的「权重完整性」
+    断言自动跳过, 只校验命令与接口能正常返回 —— 与工具在纯监控机器上的定位一致。
+    模型目录可用环境变量 DSH_MODELS_DIR 覆盖。
+
 依赖: curl (系统自带), clang (Command Line Tools, 用于菜单栏源码语法检查)。
 """
 
@@ -32,14 +37,30 @@ import shutil
 import time
 
 # ----------------------------- 路径 -----------------------------
-BASE = "/Users/rory_zhang/WorkBuddy/2026-08-28-23-12-48"
+# 源码一律相对本文件定位（本文件位于 src/ 下），工作区可整体搬迁。
+BASE = os.path.dirname(os.path.abspath(__file__))
 SCRIPT = os.path.join(BASE, "dsh-manager.sh")
 WEB = os.path.join(BASE, "dsh-web-control.py")
 APP_M = os.path.join(BASE, "dsh-menubar", "DSHStatus.m")
 APP_BIN = os.path.expanduser("~/Applications/DSH Status.app/Contents/MacOS/DSHStatus")
-MODELS_DIR = os.path.join(BASE, "mlx-agent-lab", "models")
-PY = "/Users/rory_zhang/.workbuddy/binaries/python/envs/default/bin/python3"
+
+# 模型权重属于数据、不随源码分发，需单独指定（可用 DSH_MODELS_DIR 覆盖）。
+# 默认沿用机器学习权重实际存放处；model-less 机器上相关检查会自动降级为跳过。
+MODELS_DIR = os.environ.get(
+    "DSH_MODELS_DIR",
+    os.path.expanduser("~/WorkBuddy/2026-08-28-23-12-48/mlx-agent-lab/models"),
+)
+PY = os.environ.get("DSH_PY", sys.executable)
 WEB_PORT = 8899
+
+# model-less 机器（本机未放模型权重）上，权重相关的「完整性」断言自动降级：
+# 只校验命令/接口能正常返回，不强求扫到模型。与「跨机只看内存与状态」的设计一致。
+try:
+    HAS_MODELS = os.path.isdir(MODELS_DIR) and any(
+        os.path.isdir(os.path.join(MODELS_DIR, d)) for d in os.listdir(MODELS_DIR)
+    )
+except OSError:
+    HAS_MODELS = False
 
 QUIET = "--quiet" in sys.argv
 
@@ -121,7 +142,8 @@ for line in r.stdout.strip().splitlines():
     m = re.match(r"^(.+)\|([\d.]+)$", line)
     if m:
         parsed.append((m.group(1), float(m.group(2))))
-ok = ok and len(parsed) > 0 and all(gb > 0 for _, gb in parsed)
+if HAS_MODELS:
+    ok = ok and len(parsed) > 0 and all(gb > 0 for _, gb in parsed)
 # 完整性: 磁盘上存在的模型目录都应出现在扫描结果里
 disk_models = []
 if os.path.isdir(MODELS_DIR):
@@ -129,8 +151,10 @@ if os.path.isdir(MODELS_DIR):
                    if os.path.isdir(os.path.join(MODELS_DIR, d))]
 missing = [d for d in disk_models if d not in [n for n, _ in parsed]]
 ok = ok and not missing
-check("omlx_scan: 每行 name|GB 且 GB>0, 且覆盖磁盘目录",
-      ok, "解析%d个; 磁盘缺失=%s" % (len(parsed), missing or "无"))
+detail2 = "解析%d个; 磁盘缺失=%s" % (len(parsed), missing or "无")
+if not HAS_MODELS:
+    detail2 += " [model-less: 跳过权重完整性]"
+check("omlx_scan: 每行 name|GB 且 GB>0, 且覆盖磁盘目录", ok, detail2)
 
 # ===================== T3: model_weights 格式+关键模型 =====================
 r = sh('bash %s model_weights' % sh_quote(SCRIPT))
@@ -144,15 +168,31 @@ for line in r.stdout.strip().splitlines():
     if m:
         parsed3.append((m.group(1), float(m.group(2))))
 names3 = [n for n, _ in parsed3]
-need = ["qwen3-8b-ablit", "qwen3-14b-ablit"]
-ok3 = ok3 and len(parsed3) > 0 and all(gb > 0 for _, gb in parsed3)
-ok3 = ok3 and all(n in names3 for n in need)
+# 关键模型断言动态化：期望清单 = GGUF 目录实扫（与 manager 的 GGUF_DIR 候选顺序一致）
+GGUF_DIR = os.environ.get("DSH_GGUF_DIR")
+if not GGUF_DIR:
+    for cand in (os.path.join(BASE, "llamacpp-models"),
+                 os.path.expanduser("~/WorkBuddy/2026-08-28-23-12-48/llamacpp-models"),
+                 os.path.expanduser("~/.dsh/models/gguf"),
+                 os.path.expanduser("~/models")):
+        if os.path.isdir(cand) and any(f.endswith(".gguf") for f in os.listdir(cand)):
+            GGUF_DIR = cand
+            break
+need = [os.path.basename(f)[:-5] for f in (sorted(os.listdir(GGUF_DIR))
+         if GGUF_DIR and os.path.isdir(GGUF_DIR) else []) if f.endswith(".gguf")]
+if HAS_MODELS:
+    ok3 = ok3 and len(parsed3) > 0 and all(gb > 0 for _, gb in parsed3)
+if need:
+    ok3 = ok3 and all(n in names3 for n in need)
 # 磁盘上的 oMLX 子模型也应出现
 for d in disk_models:
     if d not in names3:
         ok3 = False
-check("model_weights: 含 llamacpp 双模型与 oMLX 子模型",
-      ok3, "解析%d个; 缺关键=%s" % (len(parsed3), [n for n in need if n not in names3] or "无"))
+detail3 = "解析%d个; 期望GGUF=%s; 缺失=%s" % (
+    len(parsed3), need or "无", [n for n in need if n not in names3] or "无")
+if not HAS_MODELS and not need:
+    detail3 += " [model-less: 跳过关键模型断言]"
+check("model_weights: 覆盖磁盘 GGUF 与 oMLX 子模型", ok3, detail3)
 
 # ===================== T4: mem 口径合理性 =====================
 r = sh('bash %s mem' % sh_quote(SCRIPT))
@@ -217,8 +257,11 @@ if rc.returncode == 0 and rc.stdout.strip():
     try:
         d = json.loads(rc.stdout)
         w = d.get("weights", {})
-        ok7 = isinstance(w, dict) and len(w) > 0
+        # model-less 时允许空字典：接口契约（返回 dict）成立即可
+        ok7 = isinstance(w, dict) and (len(w) > 0 if HAS_MODELS else True)
         detail7 = "weights键数=%d" % len(w)
+        if not HAS_MODELS:
+            detail7 += " [model-less: 允许空]"
     except Exception as e:
         detail7 = "json失败: %s" % e
 else:
@@ -268,6 +311,35 @@ cs = sh('codesign -v %s' % sh_quote(os.path.expanduser("~/Applications/DSH Statu
 cs_ok = cs.returncode == 0
 check("菜单栏 app: 二进制存在且已签名",
       bin_ok and cs_ok, detail10 + (" | 签名有效" if cs_ok else " | 签名无效 rc=%d" % cs.returncode))
+
+# ===================== T11: scan_report 结构与路径真实性 =====================
+# scan_report 是网页流式扫描与菜单栏弹窗的共同数据源。模型名/端口只是展示，
+# 路径必须真实存在于磁盘——否则前端就是在给用户看不存在的东西。
+r = sh('bash %s scan_report' % sh_quote(SCRIPT))
+lines = [l.strip() for l in r.stdout.strip().splitlines() if l.strip()]
+dirs = [l for l in lines if l.startswith("dir|")]
+models = [l for l in lines if l.startswith("model|")]
+ends = [l for l in lines if l.startswith("done|")]
+ok11 = r.returncode == 0 and len(ends) == 1 and len(dirs) == 2
+bad_paths = []
+for l in models:
+    p = l.split("|")
+    if len(p) < 6:
+        ok11 = False
+        continue
+    path = "|".join(p[5:])          # 路径本身可能含 '|'
+    if not os.path.exists(path):
+        bad_paths.append(path)
+ok11 = ok11 and not bad_paths
+declared = ends[0].split("|")[1] if ends else None
+ok11 = ok11 and (declared == str(len(models)))
+if HAS_MODELS and len(models) == 0:
+    ok11 = False
+detail11 = "dir行=%d model行=%d done声明=%s; 路径无效=%s" % (
+    len(dirs), len(models), declared, bad_paths or "无")
+if HAS_MODELS and len(models) == 0:
+    detail11 += " (有模型目录却扫出 0 个)"
+check("scan_report: dir/model/done 结构完整, 模型路径真实存在", ok11, detail11)
 
 # ============================ 汇总 ============================
 fails = [r for r in results if not r[1]]

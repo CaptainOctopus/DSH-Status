@@ -21,7 +21,15 @@ import Foundation
 
 // MARK: - 配置
 
-private let kScriptPath = "/Users/rory_zhang/WorkBuddy/2026-08-28-23-12-48/dsh-manager.sh"
+// 脚本位置：优先用 .app 内置副本（与 Objective-C 版一致，保证可整体搬迁），
+// 独立二进制运行时回退到工作区源码。运行时求值，不再写死绝对路径。
+private let kScriptPath: String = {
+    if let res = Bundle.main.resourcePath {
+        let bundled = (res as NSString).appendingPathComponent("dsh-manager.sh")
+        if FileManager.default.fileExists(atPath: bundled) { return bundled }
+    }
+    return NSString(string: "~/WorkBuddy/DSH-status/src/dsh-manager.sh").expandingTildeInPath
+}()
 private let kWebConsoleURL = "http://127.0.0.1:8899"
 
 struct ManagedItem: Identifiable {

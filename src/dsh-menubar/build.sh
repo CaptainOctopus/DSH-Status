@@ -15,7 +15,7 @@ set -uo pipefail
 
 # 脚本位置即源码根（可移植，不再写死绝对路径）
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-ROOT_DIR="$(dirname "$SRC_DIR")"          # 项目根 = .../2026-08-28-23-12-48
+ROOT_DIR="$(dirname "$SRC_DIR")"          # = src/（.app 产物放在 src/dist/ 下）
 APP_NAME="DSH Status"
 BUNDLE_ID="com.rory.dshstatus"
 

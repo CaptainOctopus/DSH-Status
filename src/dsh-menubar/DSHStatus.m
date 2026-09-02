@@ -53,19 +53,8 @@ static void DSHLog(NSString *fmt, ...) {
     }
 }
 
-typedef struct {
-    int port;
-    const char *title;
-    const char *model;      // NULL = DSH Web 服务（非模型后端）
-} ItemDef;
-
-static ItemDef kItems[] = {
-    {3080, "DSH Web",          NULL},
-    {8000, "oMLX 9B/4B/14B",   "omlx"},
-    {8001, "Qwen3-8B ablit",   "qwen3-8b-ablit"},
-    {8002, "Qwen3-14B ablit",  "qwen3-14b-ablit"},
-};
-static const NSInteger kItemCount = 4;
+// 菜单条目不再用静态数组写死：DSH Web / oMLX 固定，llamacpp 模型由 GGUF 目录
+// 实扫动态生成（见 -menuSpecs）。这样磁盘上增删模型后菜单自动跟随。
 
 // MARK: - 内存读取（对齐活动监视器「已使用内存」）
 
@@ -193,14 +182,7 @@ static NSString *gb(uint64_t bytes) {
     return [NSString stringWithFormat:@"%.1f GB", bytes / 1073741824.0];
 }
 
-// oMLX 在 kItems 中的下标（其 model 字段为 "omlx"）
-static NSInteger omlxItemIndex(void) {
-    for (NSInteger i = 0; i < kItemCount; i++)
-        if (kItems[i].model && strcmp(kItems[i].model, "omlx") == 0) return i;
-    return -1;
-}
-
-// 抓取 oMLX 可服务模型清单（/v1/models，绕代理）。失败回退到已知三模型。
+// 抓取 oMLX 可服务模型清单（/v1/models，绕代理）。失败回退到扫描出的目录清单。
 static NSArray<NSString *> *fetchOmlxModels(void) {
     NSTask *t = [[NSTask alloc] init];
     t.executableURL = [NSURL fileURLWithPath:@"/usr/bin/curl"];
@@ -302,6 +284,48 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     return dict;
 }
 
+// 扫描报告：一次调用同时拿到「模型清单（含磁盘路径）」与「实际扫描的目录」。
+// 数据源为 `dsh-manager.sh scan_report`，与网页控制台同一口径，避免两边说法不一。
+// 返回 @{@"models": @[@{name,type,port,gb,path}], @"ggufDir": NSString, @"omlxDir": NSString}
+static NSDictionary<NSString *, id> *fetchScanReport(void) {
+    NSTask *t = [[NSTask alloc] init];
+    t.executableURL = [NSURL fileURLWithPath:@"/bin/bash"];
+    t.arguments = @[DSHBundleScript(), @"scan_report"];
+    NSMutableDictionary *env = [[[NSProcessInfo processInfo] environment] mutableCopy];
+    env[@"no_proxy"] = @"*";
+    env[@"http_proxy"] = @"";
+    env[@"https_proxy"] = @"";
+    env[@"PATH"] = [NSString stringWithFormat:@"%@:/usr/local/bin:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin",
+                    DSHBundlePythonBin()];
+    t.environment = env;
+    NSPipe *out = [NSPipe pipe];
+    t.standardOutput = out;
+    [t launchAndReturnError:nil];
+    [t waitUntilExit];
+    NSData *data = [[out fileHandleForReading] readDataToEndOfFile];
+    NSString *txt = [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding];
+
+    NSMutableArray<NSDictionary *> *list = [NSMutableArray array];
+    NSString *ggufDir = @"none";
+    NSString *omlxDir = @"none";
+    for (NSString *line in [txt componentsSeparatedByString:@"\n"]) {
+        NSString *s = [line stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceAndNewlineCharacterSet]];
+        if (!s.length) continue;
+        NSArray<NSString *> *p = [s componentsSeparatedByString:@"|"];
+        if (p.count >= 3 && [p[0] isEqualToString:@"dir"]) {
+            if ([p[1] isEqualToString:@"gguf"]) ggufDir = p[2];
+            else if ([p[1] isEqualToString:@"omlx"]) omlxDir = p[2];
+        } else if (p.count >= 6 && [p[0] isEqualToString:@"model"]) {
+            // 路径本身可能含 '|'，把剩余字段拼回去
+            NSString *path = [[p subarrayWithRange:NSMakeRange(5, p.count - 5)]
+                              componentsJoinedByString:@"|"];
+            [list addObject:@{@"name": p[1], @"type": p[2], @"port": p[3],
+                              @"gb": p[4], @"path": path}];
+        }
+    }
+    return @{@"models": list, @"ggufDir": ggufDir, @"omlxDir": omlxDir};
+}
+
 // MARK: - App Delegate
 
 @interface AppDelegate : NSObject <NSApplicationDelegate, NSMenuDelegate>
@@ -313,6 +337,9 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 // 只有首次启动或用户点「重新扫描模型」时才真正扫描。
 @property (nonatomic, strong) NSArray<NSDictionary *> *cachedOmlxScan;
 @property (nonatomic, strong) NSDictionary<NSString *, NSString *> *cachedModelWeights;
+// GGUF 目录实扫出的 llamacpp 模型（name/type/port/gb/path）——菜单条目由此动态生成，
+// 磁盘上增删 .gguf 后点「重新扫描模型」即跟随，不再写死模型名。
+@property (nonatomic, strong) NSArray<NSDictionary *> *cachedLlamacppItems;
 // 置 YES 时，即使菜单处于展开状态也强制重建一次（用于手动重扫后立即看到结果）
 @property (nonatomic, assign) BOOL forceRebuild;
 @end
@@ -386,19 +413,46 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [NSApp activateIgnoringOtherApps:YES];
 }
 
+// 菜单条目规格：DSH Web 固定在前，oMLX 次之，其后是 GGUF 目录实扫出的 llamacpp 模型。
+// 每项 @{@"title":.., @"port":@(n), @"model": NSString}；无 model 键即非模型服务（DSH Web）。
+// 磁盘上增删 .gguf 后点「重新扫描模型」即跟随，不再写死模型名。
+- (NSArray<NSDictionary *> *)menuSpecs {
+    NSMutableArray<NSDictionary *> *items = [NSMutableArray array];
+    [items addObject:@{@"title": @"DSH Web", @"port": @3080}];
+    [items addObject:@{@"title": @"oMLX 本地推理", @"port": @8000, @"model": @"omlx"}];
+    for (NSDictionary *g in (self.cachedLlamacppItems ?: @[])) {
+        [items addObject:@{@"title": g[@"name"],
+                           @"port": @([g[@"port"] intValue]),
+                           @"model": g[@"name"]}];
+    }
+    return items;
+}
+
 - (void)refresh {
     MemInfo m = readMemory();
     self.statusItem.button.title = [NSString stringWithFormat:@"%d%%", m.usedPct];
 
     dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
-        NSMutableArray<NSNumber *> *states = [NSMutableArray arrayWithCapacity:kItemCount];
-        for (NSInteger i = 0; i < kItemCount; i++) {
-            [states addObject:@(isPortOpen(kItems[i].port))];
-        }
         // 磁盘扫描结果走缓存：只在首次或手动重扫时才真正遍历磁盘，
         // 常态 5 秒刷新只做轻量的端口探测与内存读取。
         NSArray<NSDictionary *> *omlxScan = self.cachedOmlxScan;
         NSDictionary<NSString *, NSString *> *modelWeights = self.cachedModelWeights;
+        if (!self.cachedLlamacppItems) {
+            // 一次 scan_report 同时喂两份缓存：llamacpp 条目 + oMLX 子模型清单
+            NSDictionary<NSString *, id> *report = fetchScanReport();
+            NSArray<NSDictionary *> *all = report[@"models"] ?: @[];
+            NSMutableArray<NSDictionary *> *llama = [NSMutableArray array];
+            NSMutableArray<NSDictionary *> *omlx = [NSMutableArray array];
+            for (NSDictionary *r in all) {
+                if ([r[@"type"] isEqualToString:@"llamacpp"]) [llama addObject:r];
+                else if ([r[@"type"] isEqualToString:@"omlx"]) [omlx addObject:r];
+            }
+            self.cachedLlamacppItems = llama;
+            if (!omlxScan) {
+                omlxScan = omlx;
+                self.cachedOmlxScan = omlx;
+            }
+        }
         if (!omlxScan) {
             omlxScan = fetchOmlxScan();
             self.cachedOmlxScan = omlxScan;
@@ -407,9 +461,18 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
             modelWeights = fetchModelWeights();
             self.cachedModelWeights = modelWeights;
         }
+        NSArray<NSDictionary *> *specs = [self menuSpecs];
+        NSMutableArray<NSNumber *> *states = [NSMutableArray arrayWithCapacity:specs.count];
+        for (NSDictionary *spec in specs) {
+            [states addObject:@(isPortOpen([spec[@"port"] intValue]))];
+        }
         NSArray<NSString *> *omlxModels = nil;
         NSSet<NSString *> *omlxResident = nil;
-        NSInteger oi = omlxItemIndex();
+        // oMLX 在动态条目中的下标（model 字段为 "omlx"），不再是编译期常量
+        NSInteger oi = -1;
+        for (NSUInteger i = 0; i < specs.count; i++) {
+            if ([specs[i][@"model"] isEqualToString:@"omlx"]) { oi = (NSInteger)i; break; }
+        }
         if (oi >= 0 && oi < (NSInteger)states.count && states[oi].boolValue) {
             omlxModels = fetchOmlxModels();
             omlxResident = fetchOmlxResident();
@@ -422,7 +485,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
             // 菜单展开时不重建，避免闪烁/被关闭；手动重扫时强制重建一次
             if (self.menuOpen && !self.forceRebuild) return;
             self.forceRebuild = NO;
-            [self rebuildMenuWithMem:m states:states omlxModels:omlxModels
+            [self rebuildMenuWithMem:m states:states specs:specs omlxModels:omlxModels
                         omlxResident:omlxResident omlxScan:omlxScan
                        modelWeights:modelWeights];
         });
@@ -431,6 +494,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 
 - (void)rebuildMenuWithMem:(MemInfo)m
                      states:(NSArray<NSNumber *> *)states
+                      specs:(NSArray<NSDictionary *> *)specs
                  omlxModels:(NSArray<NSString *> *)omlxModels
                 omlxResident:(NSSet<NSString *> *)omlxResident
                     omlxScan:(NSArray<NSDictionary *> *)omlxScan
@@ -455,38 +519,43 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 
     [menu addItem:[NSMenuItem separatorItem]];
 
-    for (NSInteger i = 0; i < kItemCount; i++) {
-        ItemDef def = kItems[i];
-        BOOL running = (i < (NSInteger)states.count) ? states[i].boolValue : NO;
+    for (NSUInteger i = 0; i < specs.count; i++) {
+        NSDictionary *spec = specs[i];
+        BOOL running = (i < states.count) ? states[i].boolValue : NO;
+        NSString *model = spec[@"model"];              // nil = 非模型服务（DSH Web）
+        NSString *name = spec[@"title"];
+        int port = [spec[@"port"] intValue];
 
         NSString *weightLabel = @"";
-        if (def.model && strcmp(def.model, "omlx") != 0) {
-            NSString *gbStr = modelWeights[[NSString stringWithUTF8String:def.model]];
+        if (model.length && ![model isEqualToString:@"omlx"]) {
+            NSString *gbStr = modelWeights[model];
             if (gbStr.length > 0) {
                 weightLabel = [NSString stringWithFormat:@" · 约 %@ GB 权重", gbStr];
             }
         }
-        NSString *title = [NSString stringWithFormat:@"%@ %s :%d %@%@",
-                           running ? @"●" : @"○", def.title, def.port,
+        NSString *title = [NSString stringWithFormat:@"%@ %@ :%d %@%@",
+                           running ? @"●" : @"○", name, port,
                            running ? @"运行中" : @"已停止", weightLabel];
         NSMenuItem *stateItem = [[NSMenuItem alloc] initWithTitle:title action:nil keyEquivalent:@""];
         stateItem.enabled = NO;
         [menu addItem:stateItem];
 
         NSString *actionTitle = running
-            ? [NSString stringWithFormat:@"    停止 %s", def.title]
-            : [NSString stringWithFormat:@"    启动 %s", def.title];
+            ? [NSString stringWithFormat:@"    停止 %@", name]
+            : [NSString stringWithFormat:@"    启动 %@", name];
         NSMenuItem *actionItem = [[NSMenuItem alloc] initWithTitle:actionTitle
                                                             action:@selector(toggleItem:)
                                                      keyEquivalent:@""];
         actionItem.target = self;
-        actionItem.tag = i;
+        // 条目由磁盘扫描动态生成，故把完整规格挂在 representedObject 上：
+        // 用 tag 索引静态数组的做法在模型增删后会错位。
+        actionItem.representedObject = spec;
         actionItem.enabled = !self.busy;
         [menu addItem:actionItem];
 
         // oMLX 子模型展开：◉ 绿色高亮「当前在内存」，○ 标「待命」
         // 模型清单与占用量均来自磁盘扫描（增删自动更新），不再写死
-        if (def.model && strcmp(def.model, "omlx") == 0 && omlxModels.count > 0) {
+        if ([model isEqualToString:@"omlx"] && omlxModels.count > 0) {
             BOOL omlxUp = running;   // 本项端口通断即 oMLX 是否在跑
             [menu addItem:[NSMenuItem separatorItem]];
             NSString *hdr = omlxUp
@@ -566,11 +635,16 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
         mi.representedObject = mid;
         [harnessSub addItem:mi];
     }
-    NSMenuItem *lc = [[NSMenuItem alloc] initWithTitle:@"Qwen3-14B-abliterated (llama.cpp)"
-                                                 action:@selector(configHarnessModel:) keyEquivalent:@""];
-    lc.target = self;
-    lc.representedObject = @"qwen3-14b-ablit";
-    [harnessSub addItem:lc];
+    // llamacpp 模型来自 GGUF 目录实扫（与菜单条目同一份 specs），不再写死模型名
+    for (NSDictionary *spec in specs) {
+        NSString *mid = spec[@"model"];
+        if (!mid.length || [mid isEqualToString:@"omlx"]) continue;
+        NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:mid
+                                                    action:@selector(configHarnessModel:) keyEquivalent:@""];
+        mi.target = self;
+        mi.representedObject = mid;
+        [harnessSub addItem:mi];
+    }
     [harnessItem setSubmenu:harnessSub];
     [menu addItem:harnessItem];
 
@@ -587,18 +661,16 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
         mi.representedObject = mid;
         [wbSub addItem:mi];
     }
-    NSMenuItem *wbLc = [[NSMenuItem alloc] initWithTitle:@"Qwen3-14B-abliterated (llama.cpp)"
+    for (NSDictionary *spec in specs) {
+        NSString *mid = spec[@"model"];
+        if (!mid.length || [mid isEqualToString:@"omlx"]) continue;
+        NSMenuItem *mi = [[NSMenuItem alloc] initWithTitle:mid
                                                     action:@selector(configWorkBuddyModel:)
                                              keyEquivalent:@""];
-    wbLc.target = self;
-    wbLc.representedObject = @"qwen3-14b-ablit";
-    [wbSub addItem:wbLc];
-    NSMenuItem *wbL8 = [[NSMenuItem alloc] initWithTitle:@"Qwen3-8B-abliterated (llama.cpp)"
-                                                    action:@selector(configWorkBuddyModel:)
-                                             keyEquivalent:@""];
-    wbL8.target = self;
-    wbL8.representedObject = @"qwen3-8b-ablit";
-    [wbSub addItem:wbL8];
+        mi.target = self;
+        mi.representedObject = mid;
+        [wbSub addItem:mi];
+    }
     [wbItem setSubmenu:wbSub];
     [menu addItem:wbItem];
 
@@ -696,13 +768,12 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
 }
 
 - (void)toggleItem:(NSMenuItem *)sender {
-    NSInteger idx = sender.tag;
-    if (idx < 0 || idx >= kItemCount) return;
+    NSDictionary *spec = sender.representedObject;
+    if (![spec isKindOfClass:[NSDictionary class]]) return;
+    NSString *model = spec[@"model"];          // nil = 非模型服务（DSH Web）
+    BOOL running = isPortOpen([spec[@"port"] intValue]);
 
-    ItemDef def = kItems[idx];
-    BOOL running = isPortOpen(def.port);
-
-    if (def.model == NULL) {
+    if (!model.length) {
         BOOL willStart = !running;
         runManager(@[@"web", running ? @"stop" : @"start"]);
         // 启动 DSH Web 后直接打开浏览器到 :3080 页面
@@ -714,7 +785,7 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
             });
         }
     } else {
-        runManager(@[running ? @"unload" : @"load", [NSString stringWithUTF8String:def.model]]);
+        runManager(@[running ? @"unload" : @"load", model]);
     }
     [self setBusyFor:4.0];
 }
@@ -767,13 +838,74 @@ static NSDictionary<NSString *, NSString *> *fetchModelWeights(void) {
     [self refresh];
 }
 
-// 手动触发磁盘扫描：清缓存后重新扫描模型目录，并强制重建菜单以便立刻看到结果。
-// 常态 5 秒刷新不做磁盘扫描，避免频繁遍历模型目录。
+// 手动触发磁盘扫描：后台跑 scan_report，完成后弹窗告知扫描结果（模型名 + 磁盘路径），
+// 同时清缓存强制重建菜单，让菜单与弹窗说法一致。
+// 状态栏先临时显示 ⟳，避免点击后「毫无反应」的错觉。
 - (void)rescanModels:(id)sender {
-    self.cachedOmlxScan = nil;
-    self.cachedModelWeights = nil;
-    self.forceRebuild = YES;
-    [self refresh];
+    self.statusItem.button.title = @"⟳";
+    DSHLog(@"rescanModels: 开始扫描");
+    dispatch_async(dispatch_get_global_queue(QOS_CLASS_UTILITY, 0), ^{
+        NSDictionary<NSString *, id> *report = fetchScanReport();
+        NSArray<NSDictionary *> *found = report[@"models"] ?: @[];
+        NSString *ggufDir = report[@"ggufDir"] ?: @"none";
+        NSString *omlxDir = report[@"omlxDir"] ?: @"none";
+        DSHLog(@"rescanModels: 扫到 %lu 个模型", (unsigned long)found.count);
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.cachedLlamacppItems = nil;
+            self.cachedOmlxScan = nil;
+            self.cachedModelWeights = nil;
+            self.forceRebuild = YES;
+            [self showScanResult:found ggufDir:ggufDir omlxDir:omlxDir];
+            [self refresh];
+        });
+    });
+}
+
+// 扫描结果弹窗：标题给结论，正文列出每个模型的名称、类型/端口、权重与磁盘路径。
+// 路径较长，故用可滚动文本框承载（NSAlert 的 informativeText 不可选中复制）。
+- (void)showScanResult:(NSArray<NSDictionary *> *)found
+               ggufDir:(NSString *)ggufDir
+               omlxDir:(NSString *)omlxDir {
+    NSAlert *alert = [[NSAlert alloc] init];
+    alert.alertStyle = NSAlertStyleInformational;
+    NSUInteger n = found.count;
+    alert.messageText = n > 0
+        ? [NSString stringWithFormat:@"扫描结束：发现 %lu 个模型", (unsigned long)n]
+        : @"扫描结束：未发现模型";
+
+    NSMutableString *detail = [NSMutableString string];
+    for (NSDictionary *m in found) {
+        NSString *gbStr = m[@"gb"] ?: @"";
+        [detail appendFormat:@"• %@  (%@ :%@%@)\n  %@\n",
+         m[@"name"], m[@"type"], m[@"port"],
+         gbStr.length ? [NSString stringWithFormat:@" · %@ GB", gbStr] : @"",
+         m[@"path"]];
+    }
+    if (n == 0) {
+        [detail appendString:@"（候选目录中没有找到任何模型权重文件）"];
+    }
+
+    NSUInteger lines = [[detail componentsSeparatedByString:@"\n"] count];
+    CGFloat h = MIN(260.0, MAX(90.0, 20.0 * lines + 8.0));
+    NSScrollView *sv = [[NSScrollView alloc] initWithFrame:NSMakeRect(0, 0, 520.0, h)];
+    NSTextView *tv = [[NSTextView alloc] initWithFrame:NSMakeRect(0, 0, 520.0, h)];
+    tv.string = detail;
+    tv.editable = NO;
+    tv.selectable = YES;
+    tv.drawsBackground = NO;
+    tv.font = [NSFont systemFontOfSize:12.0];
+    tv.textContainerInset = NSMakeSize(2.0, 2.0);
+    tv.automaticLinkDetectionEnabled = NO;
+    sv.documentView = tv;
+    sv.hasVerticalScroller = YES;
+    sv.borderType = NSBezelBorder;
+    alert.accessoryView = sv;
+    alert.informativeText = [NSString stringWithFormat:@"扫描目录：\n  GGUF: %@\n  oMLX: %@",
+                             ggufDir, omlxDir];
+    [alert addButtonWithTitle:@"好"];
+    // 状态栏 app 默认不激活，弹窗可能被其他窗口盖住，先激活再显示
+    [NSApp activateIgnoringOtherApps:YES];
+    [alert runModal];
 }
 
 - (void)quitApp:(id)sender {

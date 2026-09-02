@@ -17,6 +17,7 @@
 #   ./dsh-manager.sh status [--watch]      # 模型状态 + 内存占用（--watch 实时刷新）
 #   ./dsh-manager.sh mem                   # 仅内存占用
 #   ./dsh-manager.sh models                # 列出已注册模型
+#   ./dsh-manager.sh scan_report           # 扫描报告（逐行流式输出，供 Web/菜单栏展示扫描过程与模型路径）
 #   ./dsh-manager.sh config-harness [model_id]   # 把本地模型配置为 DeepSeekHarness(DSH Web)默认模型
 #   ./dsh-manager.sh config-workbuddy [model_id]   # 直接写入 WorkBuddy 自定义模型库（~/.workbuddy/models.json）
 #   ./dsh-manager.sh help                  # 本帮助
@@ -59,45 +60,102 @@ GGUF_DIR="${GGUF_DIR:-$(
   found=""
   for d in "$WORKSPACE/llamacpp-models" \
            "$HOME/WorkBuddy/2026-08-28-23-12-48/llamacpp-models" \
-           "$HOME/.dsh/models/gguf"; do
+           "$HOME/.dsh/models/gguf" \
+           "$HOME/models"; do
     if [ -d "$d" ] && find "$d" -maxdepth 1 -name '*.gguf' | head -1 | grep -q .; then
       found="$d"; break
     fi
   done
   echo "${found:-${WORKSPACE}/llamacpp-models}"
 )}"
-DEFAULT_LLAMA="qwen3-8b-ablit"   # start 时自动拉起的 GGUF 模型
+# DEFAULT_LLAMA 在 gguf_names() 定义之后再求值（见下方 GGUF 扫描段）
 
 PAGE_SIZE=16384
 LLAMA_CTX=8192
 LLAMA_GPU_LAYERS=99
 
+# ----------------------------- GGUF 扫描 -------------------------------------
+# 扫描 GGUF_DIR，输出「name|GB」每行一条。name 取文件名去 .gguf（空格转 -）。
+# 模型清单由此动态生成：放进/删掉 .gguf 文件后，models / status / 网页自动跟随，
+# 无需改代码。文件名含 embed（不分大小写）视为嵌入模型，启动时自动加 --embedding。
+gguf_scan() {
+  [ -d "$GGUF_DIR" ] || return 0
+  local f base name bytes
+  for f in "$GGUF_DIR"/*.gguf; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f" .gguf)
+    name=$(printf '%s' "$base" | tr ' ' '-')
+    bytes=$(stat -f%z "$f" 2>/dev/null)
+    [ "${bytes:-0}" -gt 0 ] 2>/dev/null || continue
+    awk -v n="$name" -v b="$bytes" 'BEGIN {printf "%s|%.2f\n", n, b/1073741824}'
+  done
+}
+
+gguf_names() { gguf_scan | cut -d'|' -f1; }
+
+is_embed_gguf() { case "$1" in *[Ee]mbed*) return 0;; *) return 1;; esac; }
+
+# start 时自动拉起的 GGUF：第一个非嵌入模型（嵌入模型不作为默认对话后端）
+DEFAULT_LLAMA="${DEFAULT_LLAMA:-$(gguf_names | grep -iv embed | head -1)}"
+
 # ----------------------------- 模型注册表 ------------------------------------
 # 每个模型 = 一个独立服务实例。omlx 是整体服务（其子模型不可单独卸载）。
-MODELS=(omlx qwen3-8b-ablit qwen3-14b-ablit)
+# llamacpp 部分动态生成：GGUF_DIR 里每个 .gguf 一个实例，
+# 端口按扫描顺序分配 8001, 8002, ...（增删文件后以 `models` 输出为准）。
+MODELS=("omlx" $(gguf_names))
 
 mt_type() { case "$1" in
-  omlx)            echo omlx;;
-  qwen3-8b-ablit)  echo llamacpp;;
-  qwen3-14b-ablit) echo llamacpp;;
+  omlx) echo omlx;;
+  *)    echo llamacpp;;
 esac; }
 
-mt_port() { case "$1" in
-  omlx)            echo 8000;;
-  qwen3-8b-ablit)  echo 8001;;
-  qwen3-14b-ablit) echo 8002;;
-esac; }
+mt_port() {
+  case "$1" in omlx) echo 8000; return;; esac
+  local i=0 n
+  while IFS= read -r n; do
+    if [ "$n" = "$1" ]; then echo $((8001 + i)); return; fi
+    i=$((i + 1))
+  done < <(gguf_names)
+  echo 8001
+}
 
-mt_gguf() { case "$1" in
-  qwen3-8b-ablit)  echo "Huihui-Qwen3-8B-abliterated-v2.Q4_K_M.gguf";;
-  qwen3-14b-ablit) echo "Qwen3-14B-abliterated.Q4_K_M.gguf";;
-esac; }
+mt_gguf() {
+  local f base
+  for f in "$GGUF_DIR"/*.gguf; do
+    [ -f "$f" ] || continue
+    base=$(basename "$f" .gguf | tr ' ' '-')
+    [ "$base" = "$1" ] && { basename "$f"; return; }
+  done
+}
 
-mt_desc() { case "$1" in
-  omlx)            echo "oMLX 本地推理 (9B/4B/Hermes-14B)";;
-  qwen3-8b-ablit)  echo "Qwen3-8B abliterated (GGUF Q4_K_M, 4.7G)";;
-  qwen3-14b-ablit) echo "Qwen3-14B abliterated (GGUF Q4_K_M, 8.4G)";;
-esac; }
+mt_desc() {
+  local gguf; gguf=$(mt_gguf "$1")
+  case "$1" in
+    omlx) echo "oMLX 本地推理服务";;
+    *)
+      if [ -n "$gguf" ]; then
+        if is_embed_gguf "$gguf"; then
+          echo "$gguf (GGUF embedding)"
+        else
+          echo "$gguf (GGUF)"
+        fi
+      else
+        echo "$1"
+      fi;;
+  esac
+}
+
+# 动态模型清单（供网页控制台消费）：name|type|port|is_embed
+cmd_models_list() {
+  echo "omlx|omlx|8000|0"
+  local name
+  while IFS= read -r name; do
+    [ -z "$name" ] && continue
+    local e=0
+    is_embed_gguf "$(mt_gguf "$name")" && e=1
+    printf "%s|llamacpp|%s|%d\n" "$name" "$(mt_port "$name")" "$e"
+  done < <(gguf_names)
+}
 
 # ----------------------------- 小工具 ----------------------------------------
 is_registered() {
@@ -204,6 +262,7 @@ start_llamacpp() {
     echo "       ${WORKSPACE}/llamacpp-models"
     echo "       $HOME/WorkBuddy/2026-08-28-23-12-48/llamacpp-models"
     echo "       $HOME/.dsh/models/gguf"
+    echo "       $HOME/models"
     return 1
   fi
   if [ ! -f "$GGUF_DIR/$gguf" ]; then
@@ -212,11 +271,14 @@ start_llamacpp() {
     ls -1 "$GGUF_DIR" 2>/dev/null | sed 's/^/       - /'
     return 1
   fi
+  # 嵌入模型（文件名含 embed）需要 --embedding 才能正确加载
+  local extra=""
+  is_embed_gguf "$gguf" && extra="--embedding"
   echo "  启动 $name (llama.cpp :${port}) ..."
   nohup env no_proxy='*' http_proxy='' https_proxy='' "$LLAMA_BIN" \
     --model "$GGUF_DIR/$gguf" \
     --host 127.0.0.1 --port "$port" \
-    --ctx-size "$LLAMA_CTX" --gpu-layers "$LLAMA_GPU_LAYERS" > "$log" 2>&1 &
+    --ctx-size "$LLAMA_CTX" --gpu-layers "$LLAMA_GPU_LAYERS" $extra > "$log" 2>&1 &
   echo "    PID=$!"
 }
 
@@ -535,22 +597,54 @@ cmd_omlx_scan() {
   done
 }
 
-# 输出所有注册模型的权重大小（name|GB）。
-# 包括 llamacpp 的 GGUF 和 oMLX 子模型目录；增删文件后自动更新。
+# 输出所有模型的权重大小（name|GB）。
+# llamacpp 部分来自 GGUF 目录实扫，oMLX 子模型来自模型目录实扫；增删文件后自动更新。
 cmd_model_weights() {
-  local name gguf bytes
-  # llamacpp GGUF
-  for name in qwen3-8b-ablit qwen3-14b-ablit; do
-    gguf=$(mt_gguf "$name")
-    if [ -f "$GGUF_DIR/$gguf" ]; then
-      bytes=$(stat -f%z "$GGUF_DIR/$gguf" 2>/dev/null)
-      if [ "${bytes:-0}" -gt 0 ] 2>/dev/null; then
-        awk -v n="$name" -v b="$bytes" 'BEGIN {printf "%s|%.2f\n", n, b/1073741824}'
-      fi
-    fi
-  done
-  # oMLX 子模型
+  gguf_scan
   cmd_omlx_scan
+}
+
+# 扫描报告：逐行输出扫描过程，供 Web 控制台（SSE 流式）与菜单栏（弹窗）消费。
+# 与 gguf_scan / omlx_scan 的区别：本命令额外给出每个模型的磁盘路径，
+# 且「扫到一个立刻输出一行」，调用方能边扫边显示，而不是等全部扫完。
+# 行格式（| 分隔）：
+#   dir|<gguf|omlx>|<目录路径或 none>         先报告待扫描目录（不存在则 none）
+#   model|<name>|<type>|<port>|<GB>|<路径>    每扫到一个模型输出一行
+#   done|<总数>                               扫描结束
+cmd_scan_report() {
+  local n=0 f name bytes subdir
+  if [ -d "$GGUF_DIR" ]; then printf 'dir|gguf|%s\n' "$GGUF_DIR"
+  else printf 'dir|gguf|none\n'; fi
+  if [ -d "$OMLX_MODELS_DIR" ]; then printf 'dir|omlx|%s\n' "$OMLX_MODELS_DIR"
+  else printf 'dir|omlx|none\n'; fi
+
+  # 1) llama.cpp GGUF：每个 .gguf 一个模型实例
+  if [ -d "$GGUF_DIR" ]; then
+    for f in "$GGUF_DIR"/*.gguf; do
+      [ -f "$f" ] || continue
+      name=$(basename "$f" .gguf | tr ' ' '-')
+      bytes=$(stat -f%z "$f" 2>/dev/null)
+      [ "${bytes:-0}" -gt 0 ] 2>/dev/null || continue
+      awk -v n="$name" -v b="$bytes" -v p="$f" -v port="$(mt_port "$name")" \
+        'BEGIN {printf "model|%s|llamacpp|%s|%.2f|%s\n", n, port, b/1073741824, p}'
+      n=$((n + 1))
+    done
+  fi
+
+  # 2) oMLX 子模型：每个含权重的子目录一个模型（共用 :8000 服务）
+  if [ -d "$OMLX_MODELS_DIR" ]; then
+    for subdir in "$OMLX_MODELS_DIR"/*/; do
+      [ -d "$subdir" ] || continue
+      name=$(basename "$subdir")
+      bytes=$(find "$subdir" -type f \( -name "*.safetensors" -o -name "*.npz" -o -name "*.bin" \) \
+            -exec stat -f%z {} + 2>/dev/null | awk '{s+=$1} END {print s+0}')
+      [ "${bytes:-0}" -gt 0 ] 2>/dev/null || continue
+      awk -v n="$name" -v b="$bytes" -v p="${subdir%/}" \
+        'BEGIN {printf "model|%s|omlx|8000|%.2f|%s\n", n, b/1073741824, p}'
+      n=$((n + 1))
+    done
+  fi
+  printf 'done|%d\n' "$n"
 }
 
 # 把指定本地模型配置为 DeepSeekHarness(DSH Web) 的默认模型。
@@ -770,7 +864,10 @@ case "${1:-help}" in
   models)  cmd_models ;;
   omlx_resident) cmd_omlx_resident ;;
   omlx_scan) cmd_omlx_scan ;;
+  gguf_scan) gguf_scan ;;
+  models_list) cmd_models_list ;;
   model_weights) cmd_model_weights ;;
+  scan_report) cmd_scan_report ;;
   config-harness) shift; cmd_config_harness "$@" ;;
   config-workbuddy) shift; cmd_config_workbuddy "$@" ;;
   help|-h|--help) cmd_help ;;

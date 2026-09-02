@@ -159,6 +159,7 @@ function render(s){
 }
 function toast(msg){const t=document.getElementById('toast');t.textContent=msg;t.classList.add('show');setTimeout(()=>t.classList.remove('show'),1800);}
 function log(msg){const el=document.getElementById('log');el.textContent=msg;el.scrollTop=el.scrollHeight;}
+function logAdd(msg){const el=document.getElementById('log');el.textContent+='\n'+msg;el.scrollTop=el.scrollHeight;}
 async function act(cmd,name){
   const label=cmd+(name?` ${name}`:'');
   toast('执行中: '+label);
@@ -206,18 +207,60 @@ function toggleSub(name){
   if(e.has(name)) e.delete(name); else e.add(name);
   if(window.__last) render(window.__last);
 }
+// 重新扫描模型：走 SSE 流式接口，扫到一个就在「操作输出」里列一个（名称 + 路径）。
 async function rescan(){
   const btn=document.getElementById('rescanBtn');
   if(btn){btn.disabled=true;btn.textContent='扫描中…';}
-  toast('正在扫描模型目录…');
+  log('$ dshctl scan_report');
+  logAdd('⏳ 正在扫描模型…');
+  toast('正在扫描模型…');
+  let found=0, got=0;
   try{
-    const r=await fetch('/api/rescan');const j=await r.json();
-    if(j.ok){
-      const nw=Object.keys(j.weights||{}).length, no=Object.keys(j.omlx||{}).length;
-      log(`扫描完成：${nw} 个模型权重，${no} 个 oMLX 子模型`);
-      toast('扫描完成');
-    }else{ toast('扫描失败'); log('扫描失败: '+(j.error||'')); }
-  }catch(e){ toast('扫描失败: '+e); log('扫描失败: '+e); }
+    await new Promise(resolve=>{
+      let settled=false;
+      const es=new EventSource('/api/rescan_stream');
+      const finish=()=>{ if(settled)return; settled=true; try{es.close();}catch(e){} resolve(); };
+      es.addEventListener('phase',e=>{ got++; logAdd('   '+JSON.parse(e.data).text); });
+      es.addEventListener('model',e=>{
+        got++;
+        const m=JSON.parse(e.data); found++;
+        const meta=[m.type, m.port?':'+m.port:'', m.gb?m.gb+' GB':''].filter(Boolean).join('');
+        logAdd(`   ✅ [${found}] ${m.name}  (${meta})`);
+        logAdd(`        ${m.path}`);
+      });
+      es.addEventListener('done',e=>{
+        const d=JSON.parse(e.data);
+        logAdd(d.count>0
+          ? `✅ 扫描结束：共 ${d.count} 个模型（耗时 ${d.elapsed}s）`
+          : `✅ 扫描结束：未发现模型（耗时 ${d.elapsed}s）`);
+        toast(d.count>0?`扫描完成：${d.count} 个模型`:'扫描完成：未发现模型');
+        finish();
+      });
+      es.addEventListener('fail',e=>{
+        logAdd('❌ 扫描出错: '+(JSON.parse(e.data).message||''));
+        toast('扫描失败'); finish();
+      });
+      es.onerror=()=>{
+        if(settled) return;
+        // 后端不支持流式（例如跑的是旧版内嵌副本）时降级为一次性接口
+        if(got===0){
+          logAdd('⚠️ 流式接口不可用，回退一次性扫描…');
+          settled=true; try{es.close();}catch(e){}
+          fetch('/api/rescan').then(r=>r.json()).then(j=>{
+            if(j.ok){
+              const ms=j.models||[];
+              ms.forEach(m=>logAdd(`   ✅ ${m.name}  (${m.type}:${m.port})`));
+              logAdd(`✅ 扫描结束：共 ${ms.length} 个模型`);
+              toast(`扫描完成：${ms.length} 个模型`);
+            }else{ logAdd('❌ 扫描失败: '+(j.error||'')); toast('扫描失败'); }
+          }).catch(err=>{ logAdd('❌ 请求失败: '+err); toast('扫描失败'); })
+          .finally(()=>resolve());
+          return;
+        }
+        logAdd('⚠️ 连接中断'); toast('扫描中断'); finish();
+      };
+    });
+  }catch(e){ logAdd('❌ 请求失败: '+e); toast('扫描失败'); }
   finally{ if(btn){btn.disabled=false;btn.textContent='⟳ 重新扫描模型';} }
   refresh();
 }
