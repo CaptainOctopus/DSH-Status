@@ -341,6 +341,40 @@ if HAS_MODELS and len(models) == 0:
     detail11 += " (有模型目录却扫出 0 个)"
 check("scan_report: dir/model/done 结构完整, 模型路径真实存在", ok11, detail11)
 
+# ===================== T12: config-workbuddy 端口实扫 + 嵌入模型拒写 =====================
+# 端口必须来自动态扫描（mt_port），禁止回到静态名字映射（曾把 Embedding 写成 :8000）；
+# 嵌入模型没有 /v1/chat/completions，写入 WorkBuddy 模型库是废条目，必须拒绝且不动原文件。
+ok12 = False
+detail12 = ""
+mj = os.path.expanduser("~/.workbuddy/models.json")
+before = None
+if os.path.exists(mj):
+    try:
+        before = open(mj, encoding="utf-8").read()
+    except Exception:
+        pass
+# 用本地实际存在的任一嵌入模型名（文件名含 embed）；model-less 环境跳过写入断言
+embed_name = None
+r = sh("bash %s models_list" % sh_quote(SCRIPT))
+for l in r.stdout.splitlines():
+    p = l.strip().split("|")
+    if len(p) >= 4 and p[1] == "llamacpp" and p[3] == "1":
+        embed_name = p[0]
+        break
+if embed_name:
+    r = sh("bash %s config-workbuddy %s" % (sh_quote(SCRIPT), sh_quote(embed_name)))
+    out = r.stdout
+    refused = "跳过写入" in out
+    after = open(mj, encoding="utf-8").read() if os.path.exists(mj) else ""
+    # 拒绝路径下 models.json 必须原样不动（防止误写）
+    ok12 = r.returncode == 0 and refused and before is not None and after == before
+    detail12 = "模型=%s 拒绝提示=%s 文件未动=%s" % (embed_name, refused, after == before)
+    # 清理：若历史版本误写入过该嵌入模型条目，此处只检测不代删（避免动用户配置）
+else:
+    ok12 = True
+    detail12 = "[model-less: 无嵌入模型可测, 跳过]"
+check("config-workbuddy: 嵌入模型拒写且不改动 models.json", ok12, detail12)
+
 # ============================ 汇总 ============================
 fails = [r for r in results if not r[1]]
 print("\n==== 冒烟测试汇总 ====")

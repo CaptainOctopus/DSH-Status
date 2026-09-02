@@ -731,57 +731,44 @@ cmd_config_workbuddy() {
     [ -z "$model_id" ] || [ "$model_id" = "none" ] && model_id="Qwen3.5-9B-MLX-4bit"
   fi
   echo "  目标模型: $model_id"
-  local ds="${HOME}/.dsh/settings.yaml"
+  # 动态解析类型/端口/是否嵌入：与 models/status/网页同一实扫来源，杜绝静态名字→端口映射漂移。
+  # 未注册的名字（如 oMLX 子模型）保持 omlx 默认 8000。
+  local mtype="omlx" mport="8000" is_embed=0
+  if is_registered "$model_id"; then
+    mtype="$(mt_type "$model_id")"
+    mport="$(mt_port "$model_id")"
+    [ "$mtype" = "llamacpp" ] && is_embed_gguf "$(mt_gguf "$model_id")" && is_embed=1
+  fi
   local mj="${HOME}/.workbuddy/models.json"
   echo "  WorkBuddy 模型库: $mj"
-  "$py" - "$model_id" "$ds" "$mj" <<'PYEOF'
-import sys, json, os, re, shutil, tempfile
+  "$py" - "$model_id" "$mj" "$mtype" "$mport" "$is_embed" <<'PYEOF'
+import sys, json, os, shutil, tempfile
 
-model_id, ds_yaml, mj = sys.argv[1], sys.argv[2], sys.argv[3]
-low = model_id.lower()
+model_id, mj = sys.argv[1], sys.argv[2]
+mtype, mport, is_embed = sys.argv[3], sys.argv[4], sys.argv[5] == '1'
 real_id = model_id   # 用户传入的 id 即 models.json 里的条目 id
 
-# ---- 1) 解析 endpoint（仅决定接口地址，不改变 real_id） ----
-endpoint = None
-if os.path.exists(ds_yaml):
-    try:
-        import yaml
-        doc = yaml.safe_load(open(ds_yaml, encoding='utf-8'))
-        prov_root = (doc.get('llm-pi-ai') or {}).get('providers', {}) or {}
-        for prov, cfg in prov_root.items():
-            url = cfg.get('base_url') or cfg.get('baseURL') or ''
-            if not url:
-                continue
-            for m in (cfg.get('models') or []):
-                mid = m.get('id', '')
-                if mid == model_id or low in mid.lower() or low in (m.get('name', '') or '').lower():
-                    endpoint = url.rstrip('/') + '/chat/completions'
-                    break
-            if endpoint:
-                break
-    except Exception as e:
-        print("  （settings.yaml 解析失败，走兜底端口）%s" % e)
+# ---- 0) 嵌入模型拒绝写入 ----
+# WorkBuddy 自定义模型库只支持对话模型（/v1/chat/completions）；
+# 嵌入模型只有 /v1/embeddings，写进去是永远调不通的废条目。
+if is_embed:
+    print("✗ %s 是嵌入模型（embedding），只提供 /v1/embeddings 接口，" % model_id)
+    print("  无法作为 WorkBuddy 对话模型使用，已跳过写入。")
+    sys.exit(0)
 
-# 兜底端口映射（只定 endpoint）
-if not endpoint:
-    if 'qwen3-14b' in low or low.endswith('14b'):
-        endpoint = 'http://127.0.0.1:8002/v1/chat/completions'
-    elif 'qwen3-8b' in low or '8b-ablit' in low:
-        endpoint = 'http://127.0.0.1:8001/v1/chat/completions'
-    else:  # oMLX：9B / 4B / Hermes 等默认 8000
-        endpoint = 'http://127.0.0.1:8000/v1/chat/completions'
+# ---- 1) 按实扫结果解析 endpoint ----
+endpoint = "http://127.0.0.1:%s/v1/chat/completions" % mport
 
 # 规范化 host：裸 ':8000' 补成 localhost
 if endpoint.startswith('http://:') or endpoint.startswith('https://:'):
     endpoint = endpoint.replace('://:', '://localhost:', 1)
 
 # ---- 2) 能力字段默认值（仅新增条目时采用） ----
-m = re.search(r':(\d+)/', endpoint)
-port = m.group(1) if m else '8000'
-if port == '8000':                                   # oMLX
+low = model_id.lower()
+if mport == '8000':                                  # oMLX
     d_tool = True if ('9b' in low or 'hermes' in low) else False
     d_img, d_reason = False, False
-else:                                               # llama.cpp GGUF（8001/8002）
+else:                                                # llama.cpp GGUF（8001+）
     d_tool, d_img, d_reason = False, False, True
 
 entry = {
